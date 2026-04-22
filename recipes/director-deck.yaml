@@ -1,0 +1,185 @@
+name: director-deck
+version: "0.1.0"
+description: >
+  Turn a text prompt into a polished PPTX with AI-generated images and
+  Veo 3.1 video transitions. Three human review gates ensure aesthetic
+  quality at content, visual, and transition checkpoints.
+
+# ---------------------------------------------------------------------------
+# Context — provided at recipe invocation
+# ---------------------------------------------------------------------------
+context:
+  prompt:
+    description: "The topic or pitch to build the deck around (required)"
+    required: true
+  run_slug:
+    description: "Short slug for the run directory (optional; derived from prompt if omitted)"
+    required: false
+    default: ""
+
+# ---------------------------------------------------------------------------
+# Stages — 4 work stages interleaved with 3 approval gates
+# ---------------------------------------------------------------------------
+stages:
+
+  # ── Stage 1: Content & Identity ──────────────────────────────────────────
+  - name: content-and-identity
+    description: "Generate slide content, visual identity, and wireframe deck for review"
+    steps:
+
+      - name: init-run-dir
+        type: bash
+        description: "Create the isolated run directory for this session"
+        command: |
+          DATE=$(date +%Y-%m-%d)
+          SLUG="{{ context.run_slug }}"
+          if [ -z "$SLUG" ]; then
+            SLUG=$(echo "{{ context.prompt }}" | tr '[:upper:]' '[:lower:]' \
+                   | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | cut -c1-40 | sed 's/-$//')
+          fi
+          RUN_DIR="runs/${DATE}-${SLUG}"
+          mkdir -p "${RUN_DIR}/assets" "${RUN_DIR}/keyframes" "${RUN_DIR}/transitions"
+          echo "Run directory: ${RUN_DIR}"
+          echo "run_dir=${RUN_DIR}" >> $RECIPE_ENV
+
+      - name: ghost-deck-writer
+        type: agent
+        agent: ghost-deck-writer
+        description: "Generate slide_deck.json and DESIGN.md from prompt"
+        context:
+          prompt: "{{ context.prompt }}"
+          run_dir: "{{ env.run_dir }}"
+          revision_instructions: "{{ _approval_message | default('') }}"
+
+      - name: lint-design-md
+        type: bash
+        description: "Validate DESIGN.md tokens — broken refs or WCAG failures block the pipeline"
+        command: "npx @google/design.md lint {{ env.run_dir }}/DESIGN.md"
+        on_failure: abort
+
+      - name: slide-architect-wireframe
+        type: agent
+        agent: slide-architect
+        description: "Render wireframe HTML and PPTX with image placeholders"
+        context:
+          run_dir: "{{ env.run_dir }}"
+          mode: wireframe
+
+  # ── Gate 1: Content & Identity Review ────────────────────────────────────
+  - name: gate-content-identity
+    type: approval_gate
+    description: "Content & Identity Review"
+    instructions: |
+      Review the wireframe deck before image generation begins.
+
+        Open in browser:    {{ env.run_dir }}/deck_wireframe.html
+        Open in PowerPoint: {{ env.run_dir }}/deck_wireframe.pptx
+
+      You may edit before approving:
+        {{ env.run_dir }}/slide_deck.json  — titles, bullets, image briefs
+        {{ env.run_dir }}/DESIGN.md        — colors, fonts, design rationale
+
+      Approval message may include revision instructions, e.g.:
+        "make slide 3 punchier, change accent to teal"
+      These will be passed to ghost-deck-writer on re-run.
+
+      Approve when: content flow is correct, visual identity feels right,
+      placeholder layout looks good at 960×540.
+    on_approve:
+      rerun_if_message: true
+      rerun_stage: content-and-identity
+
+  # ── Stage 2: Visual Generation ───────────────────────────────────────────
+  - name: visual-generation
+    description: "Generate per-slide images and backdrops, then re-render enriched deck"
+    steps:
+
+      - name: visual-director
+        type: agent
+        agent: visual-director
+        description: "Generate content images and backdrop images for all slides"
+        context:
+          run_dir: "{{ env.run_dir }}"
+          slides_to_redo: "{{ _approval_message | default('') }}"
+
+      - name: slide-architect-enriched
+        type: agent
+        agent: slide-architect
+        description: "Re-render HTML and PPTX with real images in place"
+        context:
+          run_dir: "{{ env.run_dir }}"
+          mode: enriched
+
+  # ── Gate 2: Visual Review ────────────────────────────────────────────────
+  - name: gate-visual
+    type: approval_gate
+    description: "Visual Review"
+    instructions: |
+      Review the enriched deck with all AI-generated images in place.
+
+        Open in browser: {{ env.run_dir }}/deck_enriched.html
+
+      You may request specific re-generations in the approval message, e.g.:
+        "redo slide 5 backdrop — too busy. slide 3 image looks great."
+      visual-director will regenerate only the named assets.
+
+      Approve when: images match the brief, backdrops don't compete with text,
+      overall aesthetic is consistent with the DESIGN.md identity.
+    on_approve:
+      rerun_if_message: true
+      rerun_stage: visual-generation
+
+  # ── Stage 3: Transitions ─────────────────────────────────────────────────
+  - name: transitions
+    description: "Screenshot slides and generate Veo 3.1 transition clips for each pair"
+    steps:
+
+      - name: transition-director
+        type: agent
+        agent: transition-director
+        description: "Capture 960×540 keyframes and generate 4-second MP4 transition clips"
+        context:
+          run_dir: "{{ env.run_dir }}"
+          pairs_to_redo: "{{ _approval_message | default('') }}"
+
+  # ── Gate 3: Transition Review ────────────────────────────────────────────
+  - name: gate-transitions
+    type: approval_gate
+    description: "Transition Review"
+    instructions: |
+      Preview the transition clips. A deck with N slides has N-1 clips.
+
+        Open directory: {{ env.run_dir }}/transitions/
+
+      You may request specific clip regenerations in the approval message, e.g.:
+        "redo slide 2 to 3 — motion feels wrong. rest is good."
+      transition-director will regenerate only those pairs.
+
+      Approve when: all transitions feel smooth and match the deck's aesthetic.
+    on_approve:
+      rerun_if_message: true
+      rerun_stage: transitions
+
+  # ── Stage 4: Final Assembly ──────────────────────────────────────────────
+  - name: final-assembly
+    description: "Assemble final_deck.pptx with all assets and embedded MP4 transitions"
+    steps:
+
+      - name: deck-stitcher
+        type: agent
+        agent: deck-stitcher
+        description: "Embed approved transition clips into final_deck.pptx"
+        context:
+          run_dir: "{{ env.run_dir }}"
+
+      - name: report
+        type: bash
+        description: "Print final output location and file size"
+        command: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Director Deck — Complete"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          ls -lh "{{ env.run_dir }}/final_deck.pptx"
+          echo "  Run directory: {{ env.run_dir }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
