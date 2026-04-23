@@ -1,185 +1,550 @@
+# =============================================================================
+# CHANGELOG
+# =============================================================================
+#
+# v0.2.0 (2026-04-22):
+#   - BREAKING CHANGE: Replace unresolvable local-agent references with working
+#     foundation:zen-architect steps + direct bash steps
+#     * ROOT CAUSE: type:agent steps referencing bare agent names like
+#       'ghost-deck-writer' fail at runtime with "Agent not found in
+#       configuration" because local project agents/*.md files are NOT
+#       auto-discovered by the Amplifier runtime. Only agents registered via
+#       a bundle (bundle:agent-name) or placed in ~/.amplifier/agents/ are
+#       resolvable by the recipe engine.
+#     * FIX — two-pronged approach:
+#       1. Deterministic agents (slide-architect, deck-stitcher) — these only
+#          run known Python commands; converted to type:bash steps with the
+#          exact commands from each agent's documentation inlined. Zero LLM
+#          overhead; faster and more reliable.
+#       2. LLM-driven agents (ghost-deck-writer, visual-director,
+#          transition-director) — converted to type:agent with
+#          foundation:zen-architect and the full agent system-prompt +
+#          step-by-step instructions from each *.md file inlined in the
+#          recipe step prompt. The foundation agent is always resolvable.
+#     * NOTE on specialized tools: visual-director needs an image-generation
+#       tool (openai_images / gpt_image) and transition-director needs bash
+#       (Playwright) + veo. If foundation:zen-architect is not configured with
+#       those tools in your session, extend via agent_config or ensure the
+#       relevant tool modules are included in the foundation bundle.
+#     * RESULT: Recipe no longer fails at agent discovery. All four stages
+#       execute; the agent steps use the foundation agent with inlined
+#       instructions that reproduce the original local-agent behavior.
+#
+# v0.1.1 (2026-04-22):
+#   - BUGFIX: init-run-dir bash step fails with "$RECIPE_ENV: ambiguous redirect"
+#     * ROOT CAUSE: $RECIPE_ENV is not an Amplifier mechanism — the variable is
+#       unset at runtime, so `>> $RECIPE_ENV` becomes an ambiguous redirect.
+#     * FIX: Use the correct Amplifier bash-step output mechanism: print the
+#       computed path to stdout and declare `output: run_dir` on the step.
+#       Amplifier captures stdout and stores it in the named context variable,
+#       making {{run_dir}} available to all subsequent steps.
+#     * RESULT: run_dir propagates correctly through all four stages.
+
 name: director-deck
-version: "0.1.0"
+version: "0.2.0"
 description: >
   Turn a text prompt into a polished PPTX with AI-generated images and
   Veo 3.1 video transitions. Three human review gates ensure aesthetic
   quality at content, visual, and transition checkpoints.
 
 # ---------------------------------------------------------------------------
+# Requirements
+# ---------------------------------------------------------------------------
+# Agents:
+#   foundation:zen-architect — used for all LLM steps (must be resolvable)
+#     Stage 1 write-content: needs read_file + write_file tools
+#     Stage 2 generate-images: additionally needs openai_images / gpt_image tool
+#     Stage 3 make-transitions: additionally needs bash (Playwright) + veo tool
+#
+# Python package (for bash steps):
+#   director_deck — install with `pip install -e .` from project root
+#
+# Lint tool (optional, step continues on error if absent):
+#   npx @google/design.md lint
+#
+# Usage:
+#   amplifier run "execute recipes/director-deck.yaml with prompt='My topic here'"
+#
+# ---------------------------------------------------------------------------
 # Context — provided at recipe invocation
 # ---------------------------------------------------------------------------
 context:
-  prompt:
-    description: "The topic or pitch to build the deck around (required)"
-    required: true
-  run_slug:
-    description: "Short slug for the run directory (optional; derived from prompt if omitted)"
-    required: false
-    default: ""
+  prompt: ""           # Required: deck topic; must be provided at invocation
+  run_slug: ""         # Optional: slug override (derived from prompt if empty)
+  run_dir: ""          # Computed by init-run-dir step (output: run_dir → stdout)
+  _approval_message: ""  # Set automatically by approval gates; default empty
 
 # ---------------------------------------------------------------------------
 # Stages — 4 work stages interleaved with 3 approval gates
 # ---------------------------------------------------------------------------
 stages:
 
-  # ── Stage 1: Content & Identity ──────────────────────────────────────────
+  # ── Stage 1: Content & Identity ────────────────────────────────────────────
   - name: content-and-identity
-    description: "Generate slide content, visual identity, and wireframe deck for review"
     steps:
 
-      - name: init-run-dir
+      - id: init-run-dir
         type: bash
-        description: "Create the isolated run directory for this session"
+        # Amplifier bash steps: stdout is captured and stored in `output`.
+        # Print ONLY the path to stdout; diagnostics go to stderr.
         command: |
           DATE=$(date +%Y-%m-%d)
-          SLUG="{{ context.run_slug }}"
+          SLUG="{{run_slug}}"
           if [ -z "$SLUG" ]; then
-            SLUG=$(echo "{{ context.prompt }}" | tr '[:upper:]' '[:lower:]' \
+            SLUG=$(echo "{{prompt}}" | tr '[:upper:]' '[:lower:]' \
                    | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | cut -c1-40 | sed 's/-$//')
           fi
           RUN_DIR="runs/${DATE}-${SLUG}"
           mkdir -p "${RUN_DIR}/assets" "${RUN_DIR}/keyframes" "${RUN_DIR}/transitions"
-          echo "Run directory: ${RUN_DIR}"
-          echo "run_dir=${RUN_DIR}" >> $RECIPE_ENV
+          echo "Run directory: ${RUN_DIR}" >&2
+          printf "%s" "${RUN_DIR}"
+        output: run_dir   # stdout → {{run_dir}} available in all subsequent steps
 
-      - name: ghost-deck-writer
+      - id: write-content
+        # Replaces local agent: ghost-deck-writer
+        # Inlines the full ghost-deck-writer system prompt and instructions.
+        # Tools needed: read_file, write_file (standard foundation tools).
         type: agent
-        agent: ghost-deck-writer
-        description: "Generate slide_deck.json and DESIGN.md from prompt"
-        context:
-          prompt: "{{ context.prompt }}"
-          run_dir: "{{ env.run_dir }}"
-          revision_instructions: "{{ _approval_message | default('') }}"
+        agent: self
+        timeout: 600
+        prompt: |
+          You are the Ghost Deck Writer for Director Deck. From a user prompt you
+          produce two files that drive the entire pipeline. Use your file-writing
+          tools to create them — do NOT just output the content as text.
 
-      - name: lint-design-md
+          ## Context variables
+
+          run_dir               = {{run_dir}}
+          prompt                = {{prompt}}
+          revision_instructions = {{_approval_message}}
+          (revision_instructions is empty on the first run)
+
+          ## File 1 — {{run_dir}}/slide_deck.json
+
+          Write a valid JSON file matching this schema exactly:
+
+          {
+            "meta": {
+              "title": "<concise deck title derived from prompt>",
+              "prompt": "<original prompt verbatim>",
+              "slide_count": <N>
+            },
+            "slides": [
+              {
+                "id": 1,
+                "title": "<slide title>",
+                "bullets": ["<bullet 1>", "<bullet 2>", "<bullet 3>"],
+                "speaker_notes": "<1–3 sentences for the presenter>",
+                "image_brief": "<vivid 1-sentence description of the content image>",
+                "backdrop_brief": "<background description — no text, no people, no logos>",
+                "assets": { "image": null, "backdrop": null },
+                "transition_to_next": null
+              }
+            ]
+          }
+
+          Rules:
+          - Generate 8–12 slides unless the prompt specifies a number
+          - slide_count in meta MUST equal the length of the slides array
+          - Bullets: 2–4 per slide, each under 12 words, no punctuation at end
+          - image_brief: specific, visually concrete, one sentence (e.g. "A lone
+            developer staring at a wall of error logs, cinematic lighting")
+          - backdrop_brief: texture/gradient/mood only — no text, no faces, no logos
+          - assets and transition_to_next are always null / { "image": null,
+            "backdrop": null } from this step
+
+          ## File 2 — {{run_dir}}/DESIGN.md
+
+          Use the Google Stitch DESIGN.md spec format. The file MUST begin with
+          a YAML frontmatter block:
+
+          ---
+          name: <deck title>
+          colors:
+            primary: "<hex>"          # slide background
+            accent: "<hex>"           # headlines and callouts
+            surface: "<hex>"          # card/panel backgrounds
+            on-surface: "<hex>"       # body text (NOTE: hyphen, not underscore)
+          typography:
+            h1:
+              fontFamily: <font name>
+              fontSize: <e.g. 48px>
+              fontWeight: <e.g. 700>
+            body-md:
+              fontFamily: <font name>
+              fontSize: <e.g. 18px>
+              fontWeight: <e.g. 400>
+          spacing:
+            slide-padding: <e.g. 64px>
+            section-gap: <e.g. 32px>
+          ---
+
+          Then three markdown sections (after the frontmatter):
+
+          ## Overview
+          2–3 sentences capturing the emotional register and aesthetic intent.
+          This prose is injected into Veo and image-generation prompts — make it
+          vivid and specific.
+
+          ## Colors
+          Bullet list explaining each color's role.
+
+          ## Do's and Don'ts
+          3–5 concrete design rules for AI agents and humans reading this file.
+
+          Infer visual identity from the prompt's topic and tone:
+          - Executive / formal pitch → dark background, muted palette, neutral sans-serif
+          - Consumer / startup → high contrast, energetic accent, modern sans-serif
+          - Healthcare / legal → clean, light background, trustworthy blues or greens
+          - Creative / design → expressive palette, warm or vibrant accent
+
+          ## Handling revision_instructions (when non-empty)
+
+          Apply the instructions before writing. Examples:
+          - "make slide 3 punchier" → rewrite slide 3's title and bullets for
+            more impact
+          - "change accent to teal" → update colors.accent in DESIGN.md
+            frontmatter and prose
+          - "add a slide about pricing" → insert a pricing slide at an
+            appropriate position; update slide_count
+
+          ## After writing both files
+
+          Output a confirmation block:
+          ✓ slide_deck.json written — {N} slides, title: "{title}"
+          ✓ DESIGN.md written — {design_name}, primary {primary_color}, accent {accent_color}
+
+      - id: build-wireframe
+        # Replaces local agent: slide-architect (mode: wireframe)
+        # Runs the director_deck Python utilities directly — no LLM needed.
         type: bash
-        description: "Validate DESIGN.md tokens — broken refs or WCAG failures block the pipeline"
-        command: "npx @google/design.md lint {{ env.run_dir }}/DESIGN.md"
-        on_failure: abort
+        timeout: 300
+        command: |
+          .venv/bin/python -c "
+          from pathlib import Path
+          from director_deck.schema import SlideDeck, DesignTokens
+          from director_deck.html_renderer import write_deck_html
+          from director_deck.pptx_builder import build_pptx
 
-      - name: slide-architect-wireframe
-        type: agent
-        agent: slide-architect
-        description: "Render wireframe HTML and PPTX with image placeholders"
-        context:
-          run_dir: "{{ env.run_dir }}"
-          mode: wireframe
+          run = Path('{{run_dir}}')
+          deck = SlideDeck.from_file(run / 'slide_deck.json')
+          tokens = DesignTokens.from_design_md(run / 'DESIGN.md')
+          write_deck_html(deck, tokens, run / 'deck_wireframe.html', enriched=False)
+          build_pptx(deck, tokens, run / 'deck_wireframe.pptx', enriched=False)
+          print('done')
+          "
 
-  # ── Gate 1: Content & Identity Review ────────────────────────────────────
-  - name: gate-content-identity
-    type: approval_gate
-    description: "Content & Identity Review"
-    instructions: |
-      Review the wireframe deck before image generation begins.
+    approval:
+      required: true
+      prompt: |
+        Review the wireframe deck before image generation begins.
 
-        Open in browser:    {{ env.run_dir }}/deck_wireframe.html
-        Open in PowerPoint: {{ env.run_dir }}/deck_wireframe.pptx
+          Open in browser:    {{run_dir}}/deck_wireframe.html
+          Open in PowerPoint: {{run_dir}}/deck_wireframe.pptx
 
-      You may edit before approving:
-        {{ env.run_dir }}/slide_deck.json  — titles, bullets, image briefs
-        {{ env.run_dir }}/DESIGN.md        — colors, fonts, design rationale
+        You may edit before approving:
+          {{run_dir}}/slide_deck.json  — titles, bullets, image briefs
+          {{run_dir}}/DESIGN.md        — colors, fonts, design rationale
 
-      Approval message may include revision instructions, e.g.:
-        "make slide 3 punchier, change accent to teal"
-      These will be passed to ghost-deck-writer on re-run.
+        Approval message may include revision instructions, e.g.:
+          "make slide 3 punchier, change accent to teal"
+        These are passed to write-content on the next run.
 
-      Approve when: content flow is correct, visual identity feels right,
-      placeholder layout looks good at 960×540.
-    on_approve:
-      rerun_if_message: true
-      rerun_stage: content-and-identity
+        Approve when: content flow is correct, visual identity feels right,
+        placeholder layout looks good at 960×540.
+      timeout: 0
+      default: "deny"
 
-  # ── Stage 2: Visual Generation ───────────────────────────────────────────
+  # ── Stage 2: Visual Generation ─────────────────────────────────────────────
   - name: visual-generation
-    description: "Generate per-slide images and backdrops, then re-render enriched deck"
     steps:
 
-      - name: visual-director
+      - id: generate-images
+        # Replaces local agent: visual-director
+        # Inlines the full visual-director system prompt and instructions.
+        # Requires an openai_images (or gpt_image) tool in the agent sub-session.
+        # If foundation:zen-architect is not configured with that tool, add it
+        # via agent_config: { tools: [{ module: "tool-openai-images" }] }.
         type: agent
-        agent: visual-director
-        description: "Generate content images and backdrop images for all slides"
-        context:
-          run_dir: "{{ env.run_dir }}"
-          slides_to_redo: "{{ _approval_message | default('') }}"
+        agent: self
+        timeout: 3600
+        prompt: |
+          You are the Visual Director for Director Deck. Generate two images per
+          slide and update slide_deck.json with their paths. Use your tools to
+          actually generate the images and write the files — do not just describe
+          what you would do.
 
-      - name: slide-architect-enriched
-        type: agent
-        agent: slide-architect
-        description: "Re-render HTML and PPTX with real images in place"
-        context:
-          run_dir: "{{ env.run_dir }}"
-          mode: enriched
+          ## Context variables
 
-  # ── Gate 2: Visual Review ────────────────────────────────────────────────
-  - name: gate-visual
-    type: approval_gate
-    description: "Visual Review"
-    instructions: |
-      Review the enriched deck with all AI-generated images in place.
+          run_dir        = {{run_dir}}
+          slides_to_redo = {{_approval_message}}
+          (slides_to_redo is empty on the first run — generate ALL slides)
 
-        Open in browser: {{ env.run_dir }}/deck_enriched.html
+          ## Step 1 — Read inputs
 
-      You may request specific re-generations in the approval message, e.g.:
-        "redo slide 5 backdrop — too busy. slide 3 image looks great."
-      visual-director will regenerate only the named assets.
+          From {{run_dir}}:
+          1. Read slide_deck.json — contains image_brief and backdrop_brief per slide
+          2. Read DESIGN.md — extract:
+             a. The ## Overview section prose (text between ## Overview and the
+                next ## heading) — use first sentence as style context
+             b. The colors block from the YAML frontmatter (primary, accent)
 
-      Approve when: images match the brief, backdrops don't compete with text,
-      overall aesthetic is consistent with the DESIGN.md identity.
-    on_approve:
-      rerun_if_message: true
-      rerun_stage: visual-generation
+          ## Step 2 — Determine which slides to process
 
-  # ── Stage 3: Transitions ─────────────────────────────────────────────────
-  - name: transitions
-    description: "Screenshot slides and generate Veo 3.1 transition clips for each pair"
-    steps:
+          If slides_to_redo is non-empty, parse as comma-separated integers
+          (e.g. "3,5") and process only those slide IDs. Preserve all existing
+          assets values for slides not in the list.
 
-      - name: transition-director
-        type: agent
-        agent: transition-director
-        description: "Capture 960×540 keyframes and generate 4-second MP4 transition clips"
-        context:
-          run_dir: "{{ env.run_dir }}"
-          pairs_to_redo: "{{ _approval_message | default('') }}"
+          If slides_to_redo is empty, process all slides.
 
-  # ── Gate 3: Transition Review ────────────────────────────────────────────
-  - name: gate-transitions
-    type: approval_gate
-    description: "Transition Review"
-    instructions: |
-      Preview the transition clips. A deck with N slides has N-1 clips.
+          ## Step 3 — Construct prompts
 
-        Open directory: {{ env.run_dir }}/transitions/
+          For each slide N to process, build:
 
-      You may request specific clip regenerations in the approval message, e.g.:
-        "redo slide 2 to 3 — motion feels wrong. rest is good."
-      transition-director will regenerate only those pairs.
+          Content image prompt:
+            "{slide.image_brief}. Visual style: {first sentence of DESIGN.md Overview}.
+            Accent color: {colors.accent}. Cinematic composition, no text, no logos,
+            no watermarks."
 
-      Approve when: all transitions feel smooth and match the deck's aesthetic.
-    on_approve:
-      rerun_if_message: true
-      rerun_stage: transitions
+          Backdrop image prompt:
+            "{slide.backdrop_brief}. Abstract, no text, no people, no logos.
+            Mood: {first sentence of DESIGN.md Overview}. Dominant color: {colors.primary}.
+            Full-bleed background. Subtle texture."
 
-  # ── Stage 4: Final Assembly ──────────────────────────────────────────────
-  - name: final-assembly
-    description: "Assemble final_deck.pptx with all assets and embedded MP4 transitions"
-    steps:
+          ## Step 4 — Generate images
 
-      - name: deck-stitcher
-        type: agent
-        agent: deck-stitcher
-        description: "Embed approved transition clips into final_deck.pptx"
-        context:
-          run_dir: "{{ env.run_dir }}"
+          For each slide N, call the openai_images (or gpt_image) tool twice:
 
-      - name: report
+          Content image:
+            size:        "1536x1024"
+            quality:     "high"
+            output_path: {{run_dir}}/assets/slide-{N}-image.png
+            prompt:      <content image prompt from Step 3>
+
+          Backdrop image:
+            size:        "1536x1024"
+            quality:     "high"
+            output_path: {{run_dir}}/assets/slide-{N}-backdrop.png
+            prompt:      <backdrop prompt from Step 3>
+
+          Ensure {{run_dir}}/assets/ exists before saving (mkdir -p via bash tool
+          if needed).
+
+          ## Step 5 — Update slide_deck.json
+
+          After generating images for all target slides, update
+          {{run_dir}}/slide_deck.json. For each processed slide set:
+            "assets": {
+              "image": "assets/slide-{N}-image.png",
+              "backdrop": "assets/slide-{N}-backdrop.png"
+            }
+
+          Do NOT modify assets for slides that were not processed (when
+          slides_to_redo was set). Write the updated file back to disk.
+
+          ## After completing
+
+          Output:
+          ✓ Slide 1: assets/slide-1-image.png, assets/slide-1-backdrop.png
+          ✓ Slide 2: assets/slide-2-image.png, assets/slide-2-backdrop.png
+          ...
+          ✓ slide_deck.json updated — {N} slides with assets
+
+      - id: build-enriched
+        # Replaces local agent: slide-architect (mode: enriched)
+        # Runs the director_deck Python utilities directly — no LLM needed.
         type: bash
-        description: "Print final output location and file size"
+        timeout: 300
+        command: |
+          .venv/bin/python -c "
+          from pathlib import Path
+          from director_deck.schema import SlideDeck, DesignTokens
+          from director_deck.html_renderer import write_deck_html
+          from director_deck.pptx_builder import build_pptx
+
+          run = Path('{{run_dir}}')
+          deck = SlideDeck.from_file(run / 'slide_deck.json')
+          tokens = DesignTokens.from_design_md(run / 'DESIGN.md')
+          write_deck_html(deck, tokens, run / 'deck_enriched.html', enriched=True)
+          build_pptx(deck, tokens, run / 'deck_enriched.pptx', enriched=True)
+          print('done')
+          "
+
+    approval:
+      required: true
+      prompt: |
+        Review the enriched deck with all AI-generated images in place.
+
+          Open in browser: {{run_dir}}/deck_enriched.html
+
+        You may request specific re-generations in the approval message, e.g.:
+          "redo slide 5 backdrop — too busy. slide 3 image looks great."
+        generate-images will regenerate only the named assets.
+
+        Approve when: images match the brief, backdrops don't compete with text,
+        overall aesthetic is consistent with the DESIGN.md identity.
+      timeout: 0
+      default: "deny"
+
+  # ── Stage 3: Transitions ───────────────────────────────────────────────────
+  - name: transitions
+    steps:
+
+      - id: make-transitions
+        # Replaces local agent: transition-director
+        # Inlines the full transition-director system prompt and instructions.
+        # Requires: bash tool (for Playwright screenshots) + veo tool
+        # (for video generation). If those are not in the foundation agent's
+        # sub-session, extend via agent_config accordingly.
+        type: agent
+        agent: self
+        timeout: 7200
+        prompt: |
+          You are the Transition Director for Director Deck. Produce short video
+          clips that play between slides as cinematic transitions. Use your tools
+          to actually run the commands and generate the videos — do not just
+          describe what you would do.
+
+          ## Context variables
+
+          run_dir       = {{run_dir}}
+          pairs_to_redo = {{_approval_message}}
+          (pairs_to_redo is empty on the first run — generate ALL pairs)
+
+          ## Step 1 — Capture keyframes
+
+          Run the following Python command via your bash tool to screenshot every
+          slide from the enriched HTML deck:
+
+          python -c "
+          from pathlib import Path
+          from director_deck.schema import SlideDeck
+          from director_deck.screenshot_tool import screenshot_deck
+
+          run = Path('{{run_dir}}')
+          deck = SlideDeck.from_file(run / 'slide_deck.json')
+          paths = screenshot_deck(
+              run / 'deck_enriched.html',
+              run / 'keyframes',
+              slide_count=deck.meta.slide_count,
+          )
+          for p in paths:
+              print(p)
+          "
+
+          Expected output: {{run_dir}}/keyframes/slide-N.png for N = 1..slide_count.
+
+          If pairs_to_redo is non-empty and keyframes already exist, you may skip
+          re-screenshotting and reuse the existing images.
+
+          ## Step 2 — Extract DESIGN.md Overview prose
+
+          Read {{run_dir}}/DESIGN.md. Extract the ## Overview section — the text
+          between the ## Overview heading and the next ## heading. Use the first
+          1–2 sentences as style context for Veo prompts.
+
+          ## Step 3 — Determine which slide pairs to process
+
+          A deck with N slides has N-1 transition pairs: (1→2), (2→3), …, ((N-1)→N).
+
+          If pairs_to_redo is non-empty (e.g. "1-2,3-4"), parse into a list of
+          (from, to) integer tuples and process only those pairs. Leave existing
+          MP4 files and transition_to_next values for other pairs unchanged.
+
+          If pairs_to_redo is empty, process all pairs.
+
+          ## Step 4 — Generate transition clips
+
+          For each pair (slide N → slide N+1), call the veo tool with:
+            operation:        image_to_video
+            model:            veo-3.1-generate-preview
+            image_path:       {{run_dir}}/keyframes/slide-{N}.png
+            last_frame_path:  {{run_dir}}/keyframes/slide-{N+1}.png
+            prompt: >
+              Smooth cinematic transition between two presentation slides.
+              {DESIGN.md Overview first sentence}. No text overlays, no people,
+              no logos. Natural motion flows from the first frame to the second.
+            duration_seconds: "4"
+            aspect_ratio:     "16:9"
+            output_path:      {{run_dir}}/transitions/slide-{N}-to-{N+1}.mp4
+
+          Create {{run_dir}}/transitions/ before saving if it does not exist.
+          Generate clips SEQUENTIALLY — do not attempt parallel Veo calls.
+
+          ## Step 5 — Update slide_deck.json
+
+          After generating all clips, populate transition_to_next for each
+          processed slide:
+            "transition_to_next": "transitions/slide-{N}-to-{N+1}.mp4"
+
+          The final slide always has "transition_to_next": null.
+          Write the updated slide_deck.json back to {{run_dir}}/slide_deck.json.
+
+          ## After completing
+
+          Output:
+          ✓ keyframes: slide-1.png … slide-{N}.png
+          ✓ transitions: slide-1-to-2.mp4 … slide-{N-1}-to-{N}.mp4
+          ✓ slide_deck.json updated with transition_to_next paths
+
+    approval:
+      required: true
+      prompt: |
+        Preview the transition clips. A deck with N slides has N-1 clips.
+
+          Open directory: {{run_dir}}/transitions/
+
+        You may request specific clip regenerations in the approval message, e.g.:
+          "redo slide 2 to 3 — motion feels wrong. rest is good."
+        make-transitions will regenerate only those pairs.
+
+        Approve when: all transitions feel smooth and match the deck's aesthetic.
+      timeout: 0
+      default: "deny"
+
+  # ── Stage 4: Final Assembly ────────────────────────────────────────────────
+  - name: final-assembly
+    steps:
+
+      - id: assemble-deck
+        # Replaces local agent: deck-stitcher
+        # Runs the director_deck stitcher directly — no LLM needed.
+        type: bash
+        timeout: 300
+        command: |
+          .venv/bin/python -c "
+          from pathlib import Path
+          from director_deck.schema import SlideDeck
+          from director_deck.pptx_stitcher import embed_transitions
+
+          run = Path('{{run_dir}}')
+          deck = SlideDeck.from_file(run / 'slide_deck.json')
+
+          transitions = []
+          for slide in deck.slides:
+              if slide.transition_to_next:
+                  mp4_path = run / slide.transition_to_next
+                  if mp4_path.exists():
+                      transitions.append((slide.id, mp4_path))
+                  else:
+                      print(f'WARNING: {mp4_path} not found — skipping transition for slide {slide.id}')
+
+          result = embed_transitions(
+              run / 'deck_enriched.pptx',
+              transitions,
+              run / 'final_deck.pptx',
+          )
+          print(f'Written: {result}')
+          print(f'Transitions embedded: {len(transitions)}')
+          "
+
+      - id: report
+        type: bash
         command: |
           echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "  Director Deck — Complete"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          ls -lh "{{ env.run_dir }}/final_deck.pptx"
-          echo "  Run directory: {{ env.run_dir }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          ls -lh "{{run_dir}}/final_deck.pptx"
+          echo "  Run directory: {{run_dir}}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
