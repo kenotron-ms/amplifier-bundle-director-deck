@@ -132,7 +132,9 @@ stages:
             "slides": [
               {
                 "id": 1,
-                "title": "<slide title>",
+                "title": "<slide title — a punchy conclusion, not a topic label>",
+                "layout_type": "<one of the 9 layout types below>",
+                "hero_statement": "<for hero/statement/stat_callout layouts: the one-liner that IS the slide>",
                 "bullets": ["<bullet 1>", "<bullet 2>", "<bullet 3>"],
                 "speaker_notes": "<1–3 sentences for the presenter>",
                 "image_brief": "<vivid 1-sentence description of the content image>",
@@ -143,15 +145,101 @@ stages:
             ]
           }
 
-          Rules:
-          - Generate 8–12 slides unless the prompt specifies a number
+          ## COMPELLING DECK PRINCIPLES — apply these rigorously
+
+          ### 1. One idea per slide (the MECE test)
+          Every slide communicates exactly ONE discrete idea. Test: can you summarize
+          the slide in a single sentence? If you need "and" to describe it, split it.
+
+          ### 2. Titles are conclusions, not topics
+          BAD:  "Market Expansion Strategy"
+          GOOD: "Our $2B growth opportunity lives in Asia, not Europe"
+          BAD:  "Customer Feedback"
+          GOOD: "Customers don't want more features — they want simpler onboarding"
+          Titles must answer "so what?" implicitly. Under 12 words. No gerunds.
+
+          ### 3. Narrative arc — pick one and commit
+          A. Problem → Solution → Benefit (classic): slides 1-3 establish the
+             problem, 4-6 reveal the solution, 7-9 quantify the payoff.
+          B. Pyramid (McKinsey): open with the conclusion, then prove it with
+             supporting evidence slides.
+          C. Before → After → How: show the current state, then the vision,
+             then the path. Works for transformation/cultural topics.
+
+          ### 4. Layout variety — NOT all title+bullets
+          Vary layouts across the deck. A 10-slide deck should use at least 4
+          different layout types. Opening and closing slides are always "hero".
+          Section transitions use "statement". Use "stat_callout" when there is a
+          striking number that proves the point.
+
+          ## LAYOUT TYPES (pick the right one for each slide's content)
+
+          layout_type values and when to use them:
+
+          "hero" — Opening slide, closing slide, pivotal moment slides.
+            hero_statement = the single most powerful sentence in the deck.
+            bullets = leave empty [] OR one short phrase as a sub-line.
+            image_brief = describe the full-bleed image behind the statement.
+            NOTE: hero_statement is required for this layout.
+
+          "statement" — Section divider / chapter title. Pure typography.
+            hero_statement = the chapter/section title (bold single idea).
+            bullets = [] (empty — this is a breather slide).
+            image_brief = dramatic backdrop description only.
+
+          "stat_callout" — When you have ONE striking number or metric.
+            hero_statement = the number or stat (e.g. "94%", "£2.1B", "1952").
+            bullets[0] = the context sentence ("of HK residents drink it daily").
+            bullets[1] = optional second line of context.
+            image_brief = abstract visual related to the stat.
+
+          "quote" — A powerful quote from a real person or source.
+            hero_statement = the quote text (verbatim if known, evocative if invented).
+            bullets[0] = attribution ("— Anthony Bourdain, No Reservations, 2009").
+            image_brief = portrait or atmospheric image relevant to the source.
+
+          "comparison" — Two-column contrast (before/after, option A/option B).
+            title = "X vs Y" or "Before / After" (the "/" splits column headers).
+            bullets = first half go in left column, second half in right column.
+            Split them evenly. image_brief = contrasting diptych visual.
+
+          "full_bleed" — When the image IS the argument. Minimal text.
+            hero_statement = 1 short sentence overlaid on the image (optional).
+            bullets = [] (empty).
+            image_brief = the image that makes the point wordlessly.
+
+          "bullets" — Default: title + 2–4 bullets + content image. Use for
+            explanatory slides where detail matters and no other layout fits.
+            Bullets: under 12 words each, no terminal punctuation.
+
+          "process_flow" — Numbered steps or workflow. Still uses bullets layout
+            visually, but bullets are numbered steps (prefix with "1. 2. 3.").
+            Use for 3–5 steps. image_brief = the process in action.
+
+          "timeline" — Chronological progression. Bullets are ordered events
+            (prefix with year or date). Use for history, roadmap, milestones.
+            image_brief = archival or future-forward visual.
+
+          ## LAYOUT SELECTION DECISION TREE
+
+          1. Is this the opening or closing slide? → hero
+          2. Is this a chapter/section break? → statement
+          3. Is there ONE striking number that proves the point? → stat_callout
+          4. Is it a powerful quote from a named source? → quote
+          5. Is it two opposing things? → comparison
+          6. Does an image make the argument better than words? → full_bleed
+          7. Is it a sequence of 3–5 steps? → process_flow
+          8. Is it chronological with dates? → timeline
+          9. Otherwise → bullets
+
+          ## SLIDE COUNT AND PACING
+
+          - Generate 8–12 slides unless the prompt specifies otherwise
           - slide_count in meta MUST equal the length of the slides array
-          - Bullets: 2–4 per slide, each under 12 words, no punctuation at end
-          - image_brief: specific, visually concrete, one sentence (e.g. "A lone
-            developer staring at a wall of error logs, cinematic lighting")
-          - backdrop_brief: texture/gradient/mood only — no text, no faces, no logos
-          - assets and transition_to_next are always null / { "image": null,
-            "backdrop": null } from this step
+          - Minimum 1 hero slide (opening), 1 hero or statement slide (closing)
+          - No more than 3 consecutive "bullets" layout slides — break with a
+            statement or stat_callout
+          - Total text per slide (title + bullets combined): under 50 words
 
           ## File 2 — {{run_dir}}/DESIGN.md
 
@@ -182,36 +270,39 @@ stages:
           Then three markdown sections (after the frontmatter):
 
           ## Overview
-          2–3 sentences capturing the emotional register and aesthetic intent.
+          2–3 vivid sentences capturing emotional register and aesthetic intent.
           This prose is injected into Veo and image-generation prompts — make it
-          vivid and specific.
+          specific, sensory, and evocative. Not generic ("professional and clean").
 
           ## Colors
-          Bullet list explaining each color's role.
+          Bullet list explaining each color's role and the feeling it creates.
 
           ## Do's and Don'ts
-          3–5 concrete design rules for AI agents and humans reading this file.
+          5–7 concrete design rules. Include rules about motion, texture, and what
+          imagery to avoid — these feed directly into image and video generation.
 
           Infer visual identity from the prompt's topic and tone:
           - Executive / formal pitch → dark background, muted palette, neutral sans-serif
           - Consumer / startup → high contrast, energetic accent, modern sans-serif
           - Healthcare / legal → clean, light background, trustworthy blues or greens
-          - Creative / design → expressive palette, warm or vibrant accent
+          - Creative / cultural / food → expressive palette, warm or vibrant accent,
+            serif display font for headlines
 
           ## Handling revision_instructions (when non-empty)
 
           Apply the instructions before writing. Examples:
-          - "make slide 3 punchier" → rewrite slide 3's title and bullets for
-            more impact
+          - "make slide 3 punchier" → change title to a sharper conclusion,
+            tighten bullets, consider switching to hero or stat_callout layout
           - "change accent to teal" → update colors.accent in DESIGN.md
             frontmatter and prose
-          - "add a slide about pricing" → insert a pricing slide at an
-            appropriate position; update slide_count
+          - "add a slide about pricing" → insert at appropriate position,
+            pick the right layout type, update slide_count
 
           ## After writing both files
 
           Output a confirmation block:
           ✓ slide_deck.json written — {N} slides, title: "{title}"
+            Layout breakdown: {list each layout_type used}
           ✓ DESIGN.md written — {design_name}, primary {primary_color}, accent {accent_color}
 
       - id: build-wireframe
