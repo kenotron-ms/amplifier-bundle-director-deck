@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Joy of Hong Kong Milk Tea</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #000;
+  width: 100vw; height: 100vh;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: none;
+}
+
+/*
+ * THE KEY FIX: A single locked 16:9 canvas.
+ * Slides (1536×864) and transition videos (16:9) both live here.
+ * They NEVER leave this box — zero dimension jump possible.
+ */
+#canvas {
+  position: relative;
+  /* fill viewport at 16:9, letterbox top/bottom on portrait screens */
+  width: min(100vw, 100vh * (16/9));
+  height: min(100vh, 100vw * (9/16));
+  background: #000;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+/* Every child fills the canvas exactly */
+.layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Slide images — fill canvas, maintain aspect ratio  */
+.slide {
+  display: none;
+}
+.slide.active {
+  display: block;
+}
+.slide img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;   /* 16:9 src in 16:9 canvas → perfect fill, zero bars */
+  display: block;
+}
+
+/* Transition video — same canvas, same dimensions, zero gap */
+#trans-video {
+  display: none;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;   /* 16:9 video in 16:9 canvas → perfect fill */
+  background: #000;
+}
+#trans-video.playing {
+  display: block;
+}
+
+/* ── UI chrome ─────────────────────────────────────── */
+#counter {
+  position: fixed;
+  bottom: 18px; right: 20px;
+  color: rgba(255,255,255,0.35);
+  font: 12px/1 sans-serif;
+  letter-spacing: 0.07em;
+  z-index: 100;
+  pointer-events: none;
+}
+
+#dots {
+  position: fixed;
+  bottom: 20px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; gap: 8px;
+  z-index: 100;
+}
+.dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.2);
+  cursor: pointer;
+  transition: background .25s, transform .25s;
+}
+.dot.active { background: #D4860A; transform: scale(1.35); }
+.dot:hover  { background: rgba(255,255,255,0.55); }
+
+.nav-btn {
+  position: fixed; top: 50%;
+  transform: translateY(-50%);
+  width: 44px; height: 72px;
+  background: rgba(255,255,255,0.07);
+  border: none; color: rgba(255,255,255,0.5);
+  font-size: 22px; cursor: pointer;
+  opacity: 0; transition: opacity .25s, background .2s;
+  z-index: 100; border-radius: 4px;
+}
+body:hover .nav-btn { opacity: 1; }
+.nav-btn:hover { background: rgba(255,255,255,0.18); color: #fff; }
+.nav-btn:disabled { opacity: 0 !important; }
+#btn-prev { left: 10px; }
+#btn-next { right: 10px; }
+
+#skip-hint {
+  position: fixed;
+  bottom: 48px; left: 50%;
+  transform: translateX(-50%);
+  color: rgba(255,255,255,0.35);
+  font: 11px/1 sans-serif;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  opacity: 0; transition: opacity .3s;
+  z-index: 100; pointer-events: none;
+}
+#skip-hint.show { opacity: 1; }
+
+#cursor {
+  position: fixed;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: #D4860A;
+  opacity: .7;
+  pointer-events: none;
+  z-index: 9999;
+  transform: translate(-50%,-50%);
+  transition: width .12s, height .12s;
+}
+</style>
+</head>
+<body>
+
+<div id="cursor"></div>
+
+<!-- 16:9 locked canvas — slides AND video share this exact box -->
+<div id="canvas">
+  <div class="layer slide active" id="s1"><img src="pixel_slides/slide-1.png"  alt=""></div>
+  <div class="layer slide"        id="s2"><img src="pixel_slides/slide-2.png"  alt=""></div>
+  <div class="layer slide"        id="s3"><img src="pixel_slides/slide-3.png"  alt=""></div>
+  <div class="layer slide"        id="s4"><img src="pixel_slides/slide-4.png"  alt=""></div>
+  <div class="layer slide"        id="s5"><img src="pixel_slides/slide-5.png"  alt=""></div>
+  <div class="layer slide"        id="s6"><img src="pixel_slides/slide-6.png"  alt=""></div>
+  <div class="layer slide"        id="s7"><img src="pixel_slides/slide-7.png"  alt=""></div>
+  <div class="layer slide"        id="s8"><img src="pixel_slides/slide-8.png"  alt=""></div>
+  <div class="layer slide"        id="s9"><img src="pixel_slides/slide-9.png"  alt=""></div>
+  <div class="layer slide"       id="s10"><img src="pixel_slides/slide-10.png" alt=""></div>
+
+  <!-- Transition video lives INSIDE the canvas — identical bounding box to slides -->
+  <video id="trans-video" class="layer" playsinline preload="none"></video>
+</div>
+
+<!-- UI outside the canvas (doesn't affect sizing) -->
+<div id="dots"></div>
+<div id="counter">1 / 10</div>
+<div id="skip-hint">click · space · → to skip</div>
+<button class="nav-btn" id="btn-prev">&#8249;</button>
+<button class="nav-btn" id="btn-next">&#8250;</button>
+
+<script>
+const TOTAL = 10;
+const videoEl = document.getElementById('trans-video');
+const hint    = document.getElementById('skip-hint');
+const counter = document.getElementById('counter');
+const btnPrev = document.getElementById('btn-prev');
+const btnNext = document.getElementById('btn-next');
+const cursor  = document.getElementById('cursor');
+
+let cur  = 1;
+let busy = false;
+let pendingSlide = null;
+
+// ── Dots ────────────────────────────────────────────────────────────────
+const dotsEl = document.getElementById('dots');
+for (let i = 1; i <= TOTAL; i++) {
+  const d = document.createElement('div');
+  d.className = 'dot' + (i === 1 ? ' active' : '');
+  d.dataset.n = i;
+  d.addEventListener('click', () => { if (!busy) jumpTo(+d.dataset.n); });
+  dotsEl.appendChild(d);
+}
+
+function updateUI() {
+  counter.textContent = cur + ' / ' + TOTAL;
+  document.querySelectorAll('.dot').forEach((d, i) => {
+    d.classList.toggle('active', i + 1 === cur);
+  });
+  btnPrev.disabled = cur <= 1;
+  btnNext.disabled = cur >= TOTAL;
+}
+
+// ── Slide display ────────────────────────────────────────────────────────
+function showSlide(n, skipPreload) {
+  document.getElementById('s' + cur).classList.remove('active');
+  cur = n;
+  document.getElementById('s' + cur).classList.add('active');
+  updateUI();
+  if (!skipPreload) preload(cur, cur + 1);
+}
+
+// ── Preload next transition ──────────────────────────────────────────────
+function preload(from, to) {
+  if (from < 1 || to > TOTAL) return;
+  const lnk = document.createElement('link');
+  lnk.rel = 'prefetch';
+  lnk.as  = 'video';
+  lnk.href = `transitions/slide-${from}-to-${to}.mp4`;
+  document.head.appendChild(lnk);
+}
+
+// ── Transition playback ──────────────────────────────────────────────────
+function playTransition(from, to, onDone) {
+  busy = true;
+  hint.classList.add('show');
+
+  videoEl.src = `transitions/slide-${from}-to-${to}.mp4`;
+  videoEl.classList.add('playing');
+
+  const finish = () => {
+    videoEl.classList.remove('playing');
+    videoEl.src = '';
+    hint.classList.remove('show');
+    busy = false;
+    onDone();
+  };
+
+  videoEl.onended  = finish;
+  videoEl.onerror  = finish;   // fallback if file missing
+  videoEl.play().catch(finish);
+}
+
+// ── Skip ─────────────────────────────────────────────────────────────────
+function skip() {
+  if (!busy) return;
+  videoEl.onended = null;
+  videoEl.pause();
+  videoEl.classList.remove('playing');
+  videoEl.src = '';
+  hint.classList.remove('show');
+  busy = false;
+  if (pendingSlide !== null) {
+    const n = pendingSlide;
+    pendingSlide = null;
+    showSlide(n);
+  }
+}
+
+// ── Navigation ───────────────────────────────────────────────────────────
+function advance() {
+  if (busy)        { skip(); return; }
+  if (cur >= TOTAL) return;
+  const next = cur + 1;
+  pendingSlide = next;
+  playTransition(cur, next, () => { pendingSlide = null; showSlide(next); });
+}
+
+function retreat() {
+  if (busy) { skip(); return; }
+  if (cur <= 1) return;
+  showSlide(cur - 1);
+}
+
+function jumpTo(n) {
+  if (busy || n === cur || n < 1 || n > TOTAL) return;
+  showSlide(n);
+}
+
+// ── Keyboard ─────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  const fwd = e.key==='ArrowRight'||e.key===' '||e.key==='ArrowDown';
+  const bck = e.key==='ArrowLeft' ||e.key==='ArrowUp';
+  if (fwd) { e.preventDefault(); advance(); }
+  if (bck) { e.preventDefault(); retreat(); }
+  if (e.key==='f'||e.key==='F') {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  }
+});
+
+// ── Canvas click ─────────────────────────────────────────────────────────
+document.getElementById('canvas').addEventListener('click', advance);
+
+// ── Nav buttons ──────────────────────────────────────────────────────────
+btnPrev.addEventListener('click', e => { e.stopPropagation(); retreat(); });
+btnNext.addEventListener('click', e => { e.stopPropagation(); advance(); });
+
+// ── Cursor ───────────────────────────────────────────────────────────────
+document.addEventListener('mousemove', e => {
+  cursor.style.left = e.clientX + 'px';
+  cursor.style.top  = e.clientY + 'px';
+});
+document.addEventListener('mousedown', () => {
+  cursor.style.width = cursor.style.height = '15px';
+});
+document.addEventListener('mouseup', () => {
+  cursor.style.width = cursor.style.height = '9px';
+});
+
+// ── Canvas resize: always stays 16:9 via CSS (no JS needed) ──────────────
+// The `min(100vw, 100vh*(16/9))` CSS handles it natively.
+
+// ── Init ─────────────────────────────────────────────────────────────────
+updateUI();
+preload(1, 2);
+</script>
+</body>
+</html>
