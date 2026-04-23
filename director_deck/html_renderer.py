@@ -124,23 +124,284 @@ body { background: #111; font-family: sans-serif; }
   border-radius: 4px;
 }"""
 
+_LAYOUT_CSS = """\
+/* Layout type badge (wireframe only) */
+.layout-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(255,255,255,0.15);
+  color: var(--color-accent, #38BDF8);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 3px;
+  pointer-events: none;
+}
+/* HERO layout */
+.slide.layout-hero .hero-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-slide-padding, 64px);
+  text-align: center;
+}
+.slide.layout-hero .hero-statement {
+  font-family: var(--font-h1-family, Inter, sans-serif);
+  font-size: var(--font-h1-size, 48px);
+  font-weight: var(--font-h1-weight, 700);
+  color: var(--color-accent, #38BDF8);
+  line-height: 1.15;
+  max-width: 800px;
+}
+.slide.layout-hero .hero-sub {
+  margin-top: 20px;
+  font-family: var(--font-body-md-family, Inter, sans-serif);
+  font-size: var(--font-body-md-size, 18px);
+  color: var(--color-on-surface, #F1F5F9);
+  opacity: 0.8;
+}
+/* STATEMENT layout (section divider) */
+.slide.layout-statement .statement-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-slide-padding, 64px);
+}
+.slide.layout-statement .statement-text {
+  font-family: var(--font-h1-family, Inter, sans-serif);
+  font-size: calc(var(--font-h1-size, 48px) * 1.15);
+  font-weight: var(--font-h1-weight, 700);
+  color: var(--color-on-surface, #F1F5F9);
+  text-align: center;
+  border-left: 5px solid var(--color-accent, #38BDF8);
+  padding-left: 32px;
+  max-width: 700px;
+}
+/* STAT CALLOUT layout */
+.slide.layout-stat-callout .stat-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: var(--spacing-slide-padding, 64px);
+}
+.slide.layout-stat-callout .stat-number {
+  font-family: var(--font-h1-family, Inter, sans-serif);
+  font-size: 120px;
+  font-weight: 800;
+  color: var(--color-accent, #38BDF8);
+  line-height: 1;
+}
+.slide.layout-stat-callout .stat-label {
+  font-family: var(--font-body-md-family, Inter, sans-serif);
+  font-size: var(--font-body-md-size, 18px);
+  color: var(--color-on-surface, #F1F5F9);
+  text-align: center;
+  max-width: 600px;
+}
+/* QUOTE layout */
+.slide.layout-quote .quote-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-slide-padding, 64px);
+  gap: 24px;
+}
+.slide.layout-quote .quote-mark {
+  font-size: 100px;
+  color: var(--color-accent, #38BDF8);
+  line-height: 0.5;
+  align-self: flex-start;
+}
+.slide.layout-quote .quote-text {
+  font-family: var(--font-h1-family, Inter, sans-serif);
+  font-size: 28px;
+  font-style: italic;
+  color: var(--color-on-surface, #F1F5F9);
+  text-align: center;
+  max-width: 680px;
+  line-height: 1.4;
+}
+.slide.layout-quote .quote-attribution {
+  font-family: var(--font-body-md-family, Inter, sans-serif);
+  font-size: 14px;
+  color: var(--color-accent, #38BDF8);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+/* COMPARISON layout */
+.slide.layout-comparison .comparison-body {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+}
+.slide.layout-comparison .comparison-col {
+  flex: 1;
+  background: var(--color-surface, #1E293B);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.slide.layout-comparison .comparison-col-title {
+  font-family: var(--font-h1-family, Inter, sans-serif);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--color-accent, #38BDF8);
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+/* FULL BLEED layout */
+.slide.layout-full-bleed .full-bleed-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 32px var(--spacing-slide-padding, 64px);
+  background: linear-gradient(transparent, rgba(0,0,0,0.8));
+}
+.slide.layout-full-bleed .full-bleed-title {
+  font-family: var(--font-h1-family, Inter, sans-serif);
+  font-size: 36px;
+  font-weight: 700;
+  color: #ffffff;
+}
+"""
 
-def _render_slide_div(slide: Slide, *, enriched: bool = False) -> str:
-    """Render a single slide as a 960×540 <div id="slide-N">."""
-    bullets_html = "\n".join(
-        f'          <li class="bullet">{b}</li>' for b in slide.bullets
-    )
 
-    # Backdrop: inline background-image style when enriched and asset present
+def _render_slide_div(slide: "Slide", *, enriched: bool = False) -> str:
+    """Render a single slide as a 960×540 <div id='slide-N'> using the slide's layout_type."""
+    layout = slide.layout_type
+
+    # Backdrop style (enriched mode)
     if enriched and slide.assets.backdrop:
         bg_style = (
-            f" style=\"background-image: url('{slide.assets.backdrop}'); "
+            f' style="background-image: url(\'{slide.assets.backdrop}\'); '
             f'background-size: cover; background-position: center;"'
         )
     else:
         bg_style = ""
 
-    # Image area: real <img> when enriched + asset present, otherwise placeholder
+    # Layout type badge (always visible — helps during wireframe review)
+    badge = f'<div class="layout-badge">{layout.replace("_", " ")}</div>'
+
+    layout_class = f"layout-{layout.replace('_', '-')}"
+
+    # ── HERO layout ──────────────────────────────────────────────────────────
+    if layout == "hero":
+        statement = slide.hero_statement or slide.title
+        sub = slide.bullets[0] if slide.bullets else ""
+        return f"""\
+<div class="slide {layout_class}" id="slide-{slide.id}"{bg_style}>
+  {badge}
+  <div class="hero-content">
+    <p class="hero-statement">{statement}</p>
+    {f'<p class="hero-sub">{sub}</p>' if sub else ''}
+  </div>
+</div>"""
+
+    # ── STATEMENT layout (section divider) ───────────────────────────────────
+    if layout == "statement":
+        text = slide.hero_statement or slide.title
+        return f"""\
+<div class="slide {layout_class}" id="slide-{slide.id}"{bg_style}>
+  {badge}
+  <div class="statement-content">
+    <h2 class="statement-text">{text}</h2>
+  </div>
+</div>"""
+
+    # ── STAT CALLOUT layout ──────────────────────────────────────────────────
+    if layout == "stat_callout":
+        stat = slide.hero_statement or (slide.bullets[0] if slide.bullets else slide.title)
+        context = " ".join(slide.bullets[1:]) if len(slide.bullets) > 1 else slide.title
+        return f"""\
+<div class="slide {layout_class}" id="slide-{slide.id}"{bg_style}>
+  {badge}
+  <div class="stat-content">
+    <div class="stat-number">{stat}</div>
+    <div class="stat-label">{context}</div>
+  </div>
+</div>"""
+
+    # ── QUOTE layout ─────────────────────────────────────────────────────────
+    if layout == "quote":
+        quote = slide.hero_statement or (slide.bullets[0] if slide.bullets else slide.title)
+        attribution = slide.bullets[1] if len(slide.bullets) > 1 else ""
+        return f"""\
+<div class="slide {layout_class}" id="slide-{slide.id}"{bg_style}>
+  {badge}
+  <div class="quote-content">
+    <div class="quote-mark">\u201c</div>
+    <blockquote class="quote-text">{quote}</blockquote>
+    {f'<div class="quote-attribution">— {attribution}</div>' if attribution else ''}
+  </div>
+</div>"""
+
+    # ── COMPARISON layout ────────────────────────────────────────────────────
+    if layout == "comparison":
+        mid = len(slide.bullets) // 2
+        left_items = slide.bullets[:mid] if slide.bullets else []
+        right_items = slide.bullets[mid:] if slide.bullets else []
+        left_html = "".join(f'<li class="bullet">{b}</li>' for b in left_items)
+        right_html = "".join(f'<li class="bullet">{b}</li>' for b in right_items)
+        # Split title at "vs" or "/" for column headers
+        parts = [p.strip() for p in slide.title.replace(" vs ", " / ").split("/", 1)]
+        left_title = parts[0] if parts else "Before"
+        right_title = parts[1] if len(parts) > 1 else "After"
+        return f"""\
+<div class="slide {layout_class}" id="slide-{slide.id}"{bg_style}>
+  {badge}
+  <div class="slide-content">
+    <h1 class="slide-title">{slide.title}</h1>
+    <div class="comparison-body">
+      <div class="comparison-col">
+        <div class="comparison-col-title">{left_title}</div>
+        <ul class="bullets">{left_html}</ul>
+      </div>
+      <div class="comparison-col">
+        <div class="comparison-col-title">{right_title}</div>
+        <ul class="bullets">{right_html}</ul>
+      </div>
+    </div>
+  </div>
+</div>"""
+
+    # ── FULL BLEED layout ────────────────────────────────────────────────────
+    if layout == "full_bleed":
+        if enriched and slide.assets.image:
+            img_style = (
+                f' style="background-image: url(\'{slide.assets.image}\'); '
+                f'background-size: cover; background-position: center;"'
+            )
+        else:
+            img_style = ""
+        return f"""\
+<div class="slide {layout_class}" id="slide-{slide.id}"{img_style}>
+  {badge}
+  <div class="full-bleed-overlay">
+    <h1 class="full-bleed-title">{slide.hero_statement or slide.title}</h1>
+  </div>
+</div>"""
+
+    # ── DEFAULT: bullets, process_flow, timeline (title + bullets + image) ───
+    bullets_html = "\n".join(
+        f'          <li class="bullet">{b}</li>' for b in slide.bullets
+    )
     if enriched and slide.assets.image:
         image_html = (
             f'<img class="slide-image" src="{slide.assets.image}" '
@@ -150,7 +411,8 @@ def _render_slide_div(slide: Slide, *, enriched: bool = False) -> str:
         image_html = f'<div class="image-placeholder">{slide.image_brief}</div>'
 
     return f"""\
-<div class="slide" id="slide-{slide.id}"{bg_style}>
+<div class="slide {layout_class}" id="slide-{slide.id}"{bg_style}>
+  {badge}
   <div class="slide-content">
     <h1 class="slide-title">{slide.title}</h1>
     <div class="slide-body">
@@ -203,6 +465,7 @@ def render_deck_html(
   <style>
 {css_vars}
 {_SLIDE_BASE_CSS}
+{_LAYOUT_CSS}
   </style>
 </head>
 <body>

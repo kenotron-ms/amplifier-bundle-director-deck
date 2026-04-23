@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -11,6 +11,19 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # ---------------------------------------------------------------------------
 # SlideDeck schema — content contract shared by all agents
 # ---------------------------------------------------------------------------
+
+
+LayoutType = Literal[
+    "bullets",        # title + bullets + image (default, current layout)
+    "hero",           # full-bleed backdrop + one punchy centered statement
+    "statement",      # section divider — large centered text, no image
+    "stat_callout",   # big number/stat + brief context
+    "comparison",     # two-column side-by-side
+    "quote",          # blockquote + attribution
+    "process_flow",   # numbered steps/workflow
+    "timeline",       # sequential horizontal/vertical progression
+    "full_bleed",     # full-bleed image with minimal text overlay
+]
 
 
 class SlideAssets(BaseModel):
@@ -27,6 +40,8 @@ class Slide(BaseModel):
     speaker_notes: str
     image_brief: str
     backdrop_brief: str
+    layout_type: LayoutType = "bullets"
+    hero_statement: Optional[str] = None  # For hero/statement layouts: the "so what?" conclusion (replaces bullets)
     assets: SlideAssets = SlideAssets()
     transition_to_next: Optional[str] = None
 
