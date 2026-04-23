@@ -1,0 +1,4 @@
+# Ignore all run outputs — they are large and regenerable
+*
+!.gitignore
+!.gitkeep
