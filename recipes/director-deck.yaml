@@ -119,147 +119,195 @@ stages:
           revision_instructions = {{_approval_message}}
           (revision_instructions is empty on the first run)
 
-          ## File 1 — {{run_dir}}/slide_deck.json
+          ---
 
-          Write a valid JSON file matching this schema exactly:
+          ## STEP 1 — GHOST DECK (do this before writing any content)
+
+          Write all slide titles first as an internal outline. Read just the titles.
+          This is the **Newspaper Test** — if someone reading only the titles gets
+          the full argument, you have a coherent deck. If not, restructure before
+          writing a single bullet.
+
+          If any title could be a table-of-contents entry, it's a label — rewrite
+          it as a claim. Every title must state a claim the slide body then proves.
+
+          **Assertion title transformation — never use labels:**
+
+          | Label Title (never use) | Assertion Title (always use) |
+          |---|---|
+          | Market Overview | The mid-market segment is underserved and growing 23% YoY |
+          | Implementation Timeline | We can ship Phase 1 in 6 weeks with the existing team |
+          | Risk Assessment | Three risks could delay launch; all have mitigations |
+          | Methodology | Zero Trust works because it eliminates implicit trust at every layer |
+          | Team Structure | Cross-functional pods ship 40% faster than siloed teams |
+          | Q3 Results | Q3 exceeded targets on 4 of 5 OKRs despite the August outage |
+          | Competitive Landscape | Three competitors are converging on our core market |
+          | Next Steps | Two decisions this week determine whether we ship in Q2 or Q3 |
+
+          ---
+
+          ## STEP 2 — CHOOSE STORYTELLING FRAMEWORK
+
+          Pick one framework before writing any content. Apply it consistently:
+
+          - **Answer-first** — State the conclusion upfront, then prove it. Every
+            slide stands alone. Use when: executives who may interrupt; conclusion
+            is not controversial; fast read needed.
+          - **Tension-resolution** — Show problem, make it feel urgent, reveal
+            solution, prove it works. Use when: audience needs to feel something
+            is broken before they care about a fix; sales; change management.
+          - **Progressive-discovery** — Ask a question, walk through findings one
+            at a time, build to implications. Use when: audience needs to understand
+            the reasoning, not just the answer; teaching; technical deep-dives.
+          - **Problem-solution-impact** — Frame the problem, show the approach,
+            prove the result. Use when: presenting completed work, projects, demos.
+            Default for most cultural/editorial/food topics.
+          - **Status-report** — Objectives, progress with metrics, blockers, plan.
+            Use when: routine update where audience already understands the project.
+          - **Retrospective** — What happened, what worked, what didn't, what
+            changes. Use when: the purpose is learning, not persuasion.
+
+          ---
+
+          ## STEP 3 — OUTCOMES OVER ACTIVITY
+
+          Hard rule: never lead with activity metrics. Audiences care what changed,
+          not how busy the work was.
+
+          | Activity (never lead with) | Outcome (always lead with) |
+          |---|---|
+          | 312 commits this sprint | Shipped the new onboarding flow — activation up 18% |
+          | Wrote 3,200 lines of code | Replaced the legacy parser; import time 8s → 0.4s |
+          | 94% test coverage | Zero regressions in 6 weeks of production traffic |
+
+          ---
+
+          ## STEP 4 — THE SO WHAT TEST
+
+          For every slide: who cares, and why? The title must answer "so what?"
+          without the audience having to do the work.
+
+          ✗  "Latency dropped from 340ms to 12ms"
+          ✓  "Latency dropped from 340ms to 12ms — users see results before they finish typing"
+
+          Per format:
+          - Stat callouts: the number is not enough; add the consequence
+          - Comparisons: label the winner and say why it matters
+          - Bullets: each bullet is a claim, not a category
+
+          If you cannot articulate the so-what for a slide, the slide should not
+          exist.
+
+          ---
+
+          ## STEP 5 — EMOTIONAL ARC
+
+          Design 2–3 peak moment slides first, then build the rest around them:
+
+          - **The gap slide** — the problem felt viscerally; audience feels cost of
+            inaction
+          - **The reveal slide** — the solution clicks; the "aha" moment
+          - **The proof slide** — skeptics nod; evidence that overcomes the default
+            objection
+          - **The close slide** — thesis restated as a specific call to action.
+            Not "Thank You." Not "Questions?" A specific ask.
+
+          Ask yourself: "Which 2 slides will the audience remember tomorrow?"
+          If you can't answer that, restructure.
+
+          ---
+
+          ## STEP 6 — WRITE THE JSON
+
+          Write {{run_dir}}/slide_deck.json matching this schema exactly:
 
           {
             "meta": {
-              "title": "<concise deck title derived from prompt>",
+              "title": "<concise deck title>",
               "prompt": "<original prompt verbatim>",
               "slide_count": <N>
             },
             "slides": [
               {
                 "id": 1,
-                "title": "<slide title — a punchy conclusion, not a topic label>",
-                "layout_type": "<one of the 9 layout types below>",
-                "hero_statement": "<for hero/statement/stat_callout layouts: the one-liner that IS the slide>",
-                "bullets": ["<bullet 1>", "<bullet 2>", "<bullet 3>"],
-                "speaker_notes": "<1–3 sentences for the presenter>",
-                "image_brief": "<vivid 1-sentence description of the content image>",
-                "backdrop_brief": "<background description — no text, no people, no logos>",
+                "title": "<assertion title — the claim this slide proves>",
+                "layout_type": "<one of 9 layout types — see below>",
+                "hero_statement": "<for hero/statement/stat_callout/full_bleed: the one thing>",
+                "bullets": ["<bullet 1>", "<bullet 2>"],
+                "speaker_notes": "Key point: [2-3 sentences of depth the presenter carries verbally]. If challenged: [specific rebuttal to the most likely objection]. Transition: [one sentence connecting to the next slide's assertion].",
+                "image_brief": "<vivid, specific, 1-sentence image description>",
+                "backdrop_brief": "<texture/gradient/mood — no text, no faces, no logos>",
                 "assets": { "image": null, "backdrop": null },
                 "transition_to_next": null
               }
             ]
           }
 
-          ## COMPELLING DECK PRINCIPLES — apply these rigorously
+          ---
 
-          ### 1. One idea per slide (the MECE test)
-          Every slide communicates exactly ONE discrete idea. Test: can you summarize
-          the slide in a single sentence? If you need "and" to describe it, split it.
+          ## LAYOUT TYPES — pick by decision tree
 
-          ### 2. Titles are conclusions, not topics
-          BAD:  "Market Expansion Strategy"
-          GOOD: "Our $2B growth opportunity lives in Asia, not Europe"
-          BAD:  "Customer Feedback"
-          GOOD: "Customers don't want more features — they want simpler onboarding"
-          Titles must answer "so what?" implicitly. Under 12 words. No gerunds.
+          Ask these questions in order to pick layout_type:
 
-          ### 3. Narrative arc — pick one and commit
-          A. Problem → Solution → Benefit (classic): slides 1-3 establish the
-             problem, 4-6 reveal the solution, 7-9 quantify the payoff.
-          B. Pyramid (McKinsey): open with the conclusion, then prove it with
-             supporting evidence slides.
-          C. Before → After → How: show the current state, then the vision,
-             then the path. Works for transformation/cultural topics.
+          1. Opening or closing slide? → **hero**
+             hero_statement = the most powerful sentence in the deck
+             bullets = [] or one short sub-line
+          2. Chapter/section break, breather between dense slides? → **statement**
+             hero_statement = the chapter title
+             bullets = []
+          3. One striking number or metric that IS the point? → **stat_callout**
+             hero_statement = the number ("94%", "1952", "£2.1B")
+             bullets[0] = the consequence ("of Hong Kong residents drink it daily")
+          4. Powerful quote from a named source? → **quote**
+             hero_statement = the quote text
+             bullets[0] = attribution
+          5. Two opposing things side-by-side? → **comparison**
+             title = "X vs Y" or "Before / After" (the "/" splits column headers)
+             bullets = split evenly between columns
+          6. Image makes the argument better than words? → **full_bleed**
+             hero_statement = optional 1 sentence overlay
+             bullets = []
+          7. 3–5 sequential steps? → **process_flow**
+             bullets = numbered steps ("1. Step one", "2. Step two")
+          8. Chronological with years/dates? → **timeline**
+             bullets = dated events ("1952: First cha chaan teng opens in Kowloon")
+          9. Otherwise → **bullets**
+             title + 2–4 bullets + content image
 
-          ### 4. Layout variety — NOT all title+bullets
-          Vary layouts across the deck. A 10-slide deck should use at least 4
-          different layout types. Opening and closing slides are always "hero".
-          Section transitions use "statement". Use "stat_callout" when there is a
-          striking number that proves the point.
+          **Pacing rules:**
+          - Every slide is LIGHT, MEDIUM, or HEAVY (>3 content blocks = heavy)
+          - No two consecutive HEAVY slides
+          - At least one LIGHT slide per three (hero/statement/stat_callout = light)
+          - hero/statement slides ARE peak moments, not pauses
+          - Under 50 words total per slide (title + bullets)
+          - No more than 3 consecutive "bullets" slides
 
-          ## LAYOUT TYPES (pick the right one for each slide's content)
+          **Slide count:**
+          - 8–12 slides (default); audience calibration:
+            - Executives: 6–10 (lead with conclusion, frame around decisions)
+            - Teams: 10–15 (include methodology and detail)
+            - External/cultural: 8–12 (their world first, proof second)
 
-          layout_type values and when to use them:
-
-          "hero" — Opening slide, closing slide, pivotal moment slides.
-            hero_statement = the single most powerful sentence in the deck.
-            bullets = leave empty [] OR one short phrase as a sub-line.
-            image_brief = describe the full-bleed image behind the statement.
-            NOTE: hero_statement is required for this layout.
-
-          "statement" — Section divider / chapter title. Pure typography.
-            hero_statement = the chapter/section title (bold single idea).
-            bullets = [] (empty — this is a breather slide).
-            image_brief = dramatic backdrop description only.
-
-          "stat_callout" — When you have ONE striking number or metric.
-            hero_statement = the number or stat (e.g. "94%", "£2.1B", "1952").
-            bullets[0] = the context sentence ("of HK residents drink it daily").
-            bullets[1] = optional second line of context.
-            image_brief = abstract visual related to the stat.
-
-          "quote" — A powerful quote from a real person or source.
-            hero_statement = the quote text (verbatim if known, evocative if invented).
-            bullets[0] = attribution ("— Anthony Bourdain, No Reservations, 2009").
-            image_brief = portrait or atmospheric image relevant to the source.
-
-          "comparison" — Two-column contrast (before/after, option A/option B).
-            title = "X vs Y" or "Before / After" (the "/" splits column headers).
-            bullets = first half go in left column, second half in right column.
-            Split them evenly. image_brief = contrasting diptych visual.
-
-          "full_bleed" — When the image IS the argument. Minimal text.
-            hero_statement = 1 short sentence overlaid on the image (optional).
-            bullets = [] (empty).
-            image_brief = the image that makes the point wordlessly.
-
-          "bullets" — Default: title + 2–4 bullets + content image. Use for
-            explanatory slides where detail matters and no other layout fits.
-            Bullets: under 12 words each, no terminal punctuation.
-
-          "process_flow" — Numbered steps or workflow. Still uses bullets layout
-            visually, but bullets are numbered steps (prefix with "1. 2. 3.").
-            Use for 3–5 steps. image_brief = the process in action.
-
-          "timeline" — Chronological progression. Bullets are ordered events
-            (prefix with year or date). Use for history, roadmap, milestones.
-            image_brief = archival or future-forward visual.
-
-          ## LAYOUT SELECTION DECISION TREE
-
-          1. Is this the opening or closing slide? → hero
-          2. Is this a chapter/section break? → statement
-          3. Is there ONE striking number that proves the point? → stat_callout
-          4. Is it a powerful quote from a named source? → quote
-          5. Is it two opposing things? → comparison
-          6. Does an image make the argument better than words? → full_bleed
-          7. Is it a sequence of 3–5 steps? → process_flow
-          8. Is it chronological with dates? → timeline
-          9. Otherwise → bullets
-
-          ## SLIDE COUNT AND PACING
-
-          - Generate 8–12 slides unless the prompt specifies otherwise
-          - slide_count in meta MUST equal the length of the slides array
-          - Minimum 1 hero slide (opening), 1 hero or statement slide (closing)
-          - No more than 3 consecutive "bullets" layout slides — break with a
-            statement or stat_callout
-          - Total text per slide (title + bullets combined): under 50 words
+          ---
 
           ## File 2 — {{run_dir}}/DESIGN.md
 
-          Use the Google Stitch DESIGN.md spec format. The file MUST begin with
-          a YAML frontmatter block:
+          YAML frontmatter + 3 markdown sections.
 
           ---
           name: <deck title>
           colors:
-            primary: "<hex>"          # slide background
-            accent: "<hex>"           # headlines and callouts
+            primary: "<hex>"          # dominant slide background
+            accent: "<hex>"           # headlines, callouts, peak elements
             surface: "<hex>"          # card/panel backgrounds
-            on-surface: "<hex>"       # body text (NOTE: hyphen, not underscore)
+            on-surface: "<hex>"       # body text (hyphen, not underscore)
           typography:
             h1:
-              fontFamily: <font name>
-              fontSize: <e.g. 48px>
+              fontFamily: <name>
+              fontSize: <e.g. 52px>
               fontWeight: <e.g. 700>
             body-md:
-              fontFamily: <font name>
+              fontFamily: <name>
               fontSize: <e.g. 18px>
               fontWeight: <e.g. 400>
           spacing:
@@ -267,43 +315,47 @@ stages:
             section-gap: <e.g. 32px>
           ---
 
-          Then three markdown sections (after the frontmatter):
-
           ## Overview
-          2–3 vivid sentences capturing emotional register and aesthetic intent.
-          This prose is injected into Veo and image-generation prompts — make it
-          specific, sensory, and evocative. Not generic ("professional and clean").
+          2–3 vivid, sensory sentences. Describe the emotional register and the
+          specific visual world of this deck. This text is injected verbatim into
+          Veo transition prompts and image generation — make it specific enough to
+          constrain an image model. NOT: "professional and clean." YES: "warm amber
+          light through a condensation-fogged window in a Hong Kong cha chaan teng
+          at seven in the morning — formica, steam, worn ceramic."
 
           ## Colors
-          Bullet list explaining each color's role and the feeling it creates.
+          Bullet list: each color, its role, and the feeling it creates.
 
           ## Do's and Don'ts
-          5–7 concrete design rules. Include rules about motion, texture, and what
-          imagery to avoid — these feed directly into image and video generation.
+          5–7 concrete rules. Include: what motion/texture to use, what imagery
+          specifically belongs, what to never include. These feed directly into
+          image and video generation prompts so be specific.
 
-          Infer visual identity from the prompt's topic and tone:
-          - Executive / formal pitch → dark background, muted palette, neutral sans-serif
+          Infer from topic/tone:
+          - Executive / formal → dark background, muted palette, neutral sans-serif
           - Consumer / startup → high contrast, energetic accent, modern sans-serif
-          - Healthcare / legal → clean, light background, trustworthy blues or greens
-          - Creative / cultural / food → expressive palette, warm or vibrant accent,
-            serif display font for headlines
+          - Healthcare / legal → clean light background, trustworthy blues or greens
+          - Cultural / food / craft → expressive palette, warm accent, serif display
+
+          ---
 
           ## Handling revision_instructions (when non-empty)
 
-          Apply the instructions before writing. Examples:
-          - "make slide 3 punchier" → change title to a sharper conclusion,
-            tighten bullets, consider switching to hero or stat_callout layout
-          - "change accent to teal" → update colors.accent in DESIGN.md
-            frontmatter and prose
-          - "add a slide about pricing" → insert at appropriate position,
-            pick the right layout type, update slide_count
+          Apply them before writing. Common patterns:
+          - "make slide 3 punchier" → sharpen the assertion title, tighten bullets,
+            consider switching to hero or stat_callout layout
+          - "change accent to teal" → update DESIGN.md frontmatter and prose
+          - "add a slide about X" → insert at appropriate position, update slide_count
+          - "the deck feels generic" → reapply So What Test to every title
+
+          ---
 
           ## After writing both files
 
-          Output a confirmation block:
-          ✓ slide_deck.json written — {N} slides, title: "{title}"
-            Layout breakdown: {list each layout_type used}
-          ✓ DESIGN.md written — {design_name}, primary {primary_color}, accent {accent_color}
+          Output confirmation:
+          ✓ slide_deck.json — {N} slides | framework: {chosen} | arc: {gap/reveal/proof/close identified}
+            Layout mix: {breakdown e.g. "hero ×2, statement ×1, stat_callout ×1, bullets ×5, full_bleed ×1"}
+          ✓ DESIGN.md — "{name}", primary {primary}, accent {accent}
 
       - id: build-wireframe
         # Replaces local agent: slide-architect (mode: wireframe)
