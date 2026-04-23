@@ -264,32 +264,65 @@ def process_transition(
 # Duration heuristic
 # ---------------------------------------------------------------------------
 
-# First-match-wins rule table. None means "any layout".
-# Entries: (from_layouts | None, to_layouts | None, seconds)
+# ---------------------------------------------------------------------------
+# Duration heuristics
+# ---------------------------------------------------------------------------
+#
+# WHY LAYOUT ALONE IS NOT ENOUGH
+#
+# Layout gives structure; slide CONTENT and deck MOOD give weight.
+# "30 cha chaan tengs lost per year" needs more time to land than "94% uptime".
+# A full-bleed silk-stocking filter in a contemplative tea deck needs more time
+# than a product screenshot in a pitch deck.
+#
+# PACING PHILOSOPHY:
+#   Contemplative / cultural (food, ritual, memory, craft):
+#     Default 4.0–6.0s. Never rush a feeling.
+#   Business / pitch (decisions, data, urgency):
+#     Default 2.0–3.5s. Keep momentum, respect the audience's time.
+#   After emotional-weight slides (loss, revelation, gut-punch stats):
+#     Add 1.5–2.0s to whatever the layout default would be.
+#   Approaching statement or closing hero:
+#     Slow down. These are meditative arrivals.
+#
+# The ghost-deck-writer prompt instructs the agent to set Slide.transition_duration_s
+# explicitly per slide using this reasoning. These rules are the fallback.
+
+# Ordered rules: first match wins. None = "any".
+# Defaults lean generous — Veo gives us 8s of source material and it is
+# always easier to justify breathing room than to justify rushing a feeling.
 _DURATION_RULES: tuple[
     tuple[frozenset[str] | None, frozenset[str] | None, float], ...
 ] = (
-    (frozenset({"hero"}),                        None,                                    3.0),
-    (None,                                        frozenset({"hero"}),                    3.0),
-    (frozenset({"statement"}),                   None,                                    1.5),
-    (None,                                        frozenset({"statement"}),               1.5),
-    (frozenset({"stat_callout"}),                None,                                    2.0),
-    (None,                                        frozenset({"stat_callout"}),            2.0),
-    (frozenset({"comparison", "full_bleed"}),    None,                                    2.5),
-    (None,                                        frozenset({"comparison", "full_bleed"}), 2.5),
+    # Hero slides: dramatic opens/closes deserve time to land
+    (frozenset({"hero"}),         None,                      5.0),
+    (None,                         frozenset({"hero"}),       5.0),
+    # Statement: meditative beats — approach and exit slowly
+    (frozenset({"statement"}),    None,                      4.0),
+    (None,                         frozenset({"statement"}),  4.0),
+    # Full bleed: cinematic images deserve a slow reveal
+    (None,                         frozenset({"full_bleed"}), 4.5),
+    (frozenset({"full_bleed"}),   None,                      4.0),
+    # Stat callout: the punch needs an approach and the landing needs space
+    (None,                         frozenset({"stat_callout"}), 4.0),
+    (frozenset({"stat_callout"}), None,                      4.0),
+    # Comparison: argument slides — steady but not leisurely
+    (frozenset({"comparison"}),   None,                      3.5),
+    (None,                         frozenset({"comparison"}), 3.5),
 )
 
-_DEFAULT_DURATION_S: float = 2.5
+_DEFAULT_DURATION_S: float = 4.0   # raised: a thoughtful deck deserves time
 
 
 def suggest_transition_duration(
     from_layout: str,
     to_layout: str,
 ) -> float:
-    """Return a suggested transition duration (seconds) given the slide layouts.
+    """Return a suggested transition duration (seconds) given slide layout types.
 
-    Rule-based, first match wins. Authors override per-slide via
-    ``Slide.transition_duration_s``.
+    Rule-based, first match wins. These are editorial defaults — authors should
+    override per-slide via ``Slide.transition_duration_s`` when content weight
+    demands more or less time. See module docstring for pacing philosophy.
     """
     for from_set, to_set, seconds in _DURATION_RULES:
         if (from_set is None or from_layout in from_set) and \

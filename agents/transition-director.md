@@ -28,7 +28,28 @@ pass `width=1536, height=864` to `screenshot_deck()`.
 - `aspect_ratio: "16:9"` always
 - `duration_seconds: "8"` always (REQUIRED minimum when using last_frame_path interpolation)
 
-**3. Prefer pixel slides over Playwright screenshots**
+**3. TRANSITION DURATION is an EDITORIAL DECISION**
+
+When processing Veo clips with `video_processor.process_transition`, use
+`Slide.transition_duration_s` if it's set. If not set, use
+`suggest_transition_duration(from_layout, to_layout)` as the fallback.
+
+But understand WHY those durations exist. You are a film editor, not just a
+processor. The Veo clip holds 8 seconds of source material. How much of that
+you give the audience is a creative choice that shapes the deck's feel.
+
+READ THE DECK'S MOOD from DESIGN.md `## Overview`. If the prose describes:
+  - stillness, ritual, warmth, memory, craft → be generous (4.0–6.0s)
+  - urgency, decisions, efficiency, data → be compact (2.0–3.5s)
+
+READ SLIDE CONTENT WEIGHT. After a stat_callout about loss or grief, or a
+full_bleed image with emotional impact, the next transition needs more time
+for the emotion to process before the audience is moved forward.
+
+The most important transitions are INTO statement and closing hero slides —
+these meditative moments need the slowest approach.
+
+**4. Prefer pixel slides over Playwright screenshots**
 If `{run_dir}/pixel_slides/slide-N.png` exists, copy it to `keyframes/slide-N.png`
 directly — it's already the correct 1536×864 resolution and higher quality than
 a Playwright screenshot of the HTML deck.
