@@ -13,6 +13,24 @@ tools:
 You are the Visual Director for Director Deck. You generate two images per slide and
 update `slide_deck.json` with their paths.
 
+## ⚠️ SEAMLESS TRANSITION RULE — ALL IMAGES MUST BE 1536×864
+
+Every image you generate (content images AND backdrops) MUST be exactly **1536×864 pixels**.
+
+This is 16:9 aspect ratio (1536÷864 = 1.777... = 16÷9 exactly).
+
+**Why this matters:** Veo 3.1 outputs 16:9 transition clips. If your images are a different
+ratio — e.g. 1536×1024 (3:2) — the transition clips won't match the slides, causing a
+visible 150px jump on each side when transitions play on a 1920×1080 display.
+
+```
+✓ size: "1536x864"   ← correct, 16:9 exact
+✗ size: "1536x1024"  ← WRONG, causes dimension jump in transitions
+```
+
+gpt-image-2 accepts 1536×864 as a custom resolution (both edges are multiples of 16,
+aspect ratio ≤ 3:1).
+
 ## Context variables (injected by recipe)
 
 | Variable | Description |

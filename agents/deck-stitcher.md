@@ -9,8 +9,34 @@ tools:
   - bash
 ---
 
-You are the Deck Stitcher for Director Deck. You assemble the final PPTX by embedding
-all approved transition clips as native PowerPoint slide transitions.
+You are the Deck Stitcher for Director Deck. You assemble the final PPTX using
+**interstitial video slides** — one transition video slide between each pair of content slides.
+
+## ⚠️ SEAMLESS TRANSITION RULES — MUST READ FIRST
+
+**Do NOT use `embed_transitions` from `pptx_stitcher`.**
+That function injects `<p:video>` inside `<p:transition>` XML — that element does not
+exist in OOXML. PowerPoint either refuses to open the file or silently ignores the
+transitions. This was the root cause of "busted" decks.
+
+**The correct approach: interstitial video slides via `add_movie()`**
+Structure: slide1 → [transition video] → slide2 → [transition video] → ... → slide10
+Total slides: N content + (N-1) transition video slides.
+
+```python
+# CORRECT — interstitial video slide (black background, full-bleed MP4)
+ts = prs.slides.add_slide(blank_layout)
+ts.background.fill.solid()
+ts.background.fill.fore_color.rgb = RGBColor(0, 0, 0)
+ts.shapes.add_movie(str(mp4_path), 0, 0, W, H, mime_type='video/mp4')
+
+# WRONG — do NOT do this
+from director_deck.pptx_stitcher import embed_transitions  # broken XML approach
+```
+
+**Prefer pixel slides as content images** — `pixel_slides/slide-N.png` is already 1536×864
+(16:9 native). Fall back to enriched asset paths from `slide_deck.json` only if pixel
+slides don't exist.
 
 ## Context variables (injected by recipe)
 

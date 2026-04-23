@@ -30,6 +30,17 @@
 #       execute; the agent steps use the foundation agent with inlined
 #       instructions that reproduce the original local-agent behavior.
 #
+# v0.3.0 (2026-04-23):
+#   SEAMLESS TRANSITION RULES baked into all steps (fixes dimension mismatch
+#   that caused a 150px jump when transitions played):
+#   - generate-images: size 1536x1024 → 1536x864 (16:9 exact, both × 16)
+#   - make-transitions: Playwright viewport 960×540 → 1536×864; prefer pixel
+#     slides as keyframes; Veo duration_seconds "8" (required for interpolation)
+#   - assemble-deck: replaced broken embed_transitions (<p:video> inside
+#     <p:transition> is invalid OOXML) with add_movie() interstitial slides
+#   - screenshot_tool.py: width/height now params (default 1536×864)
+#   See: docs/SEAMLESS-TRANSITIONS-LESSONS.md
+#
 # v0.1.1 (2026-04-22):
 #   - BUGFIX: init-run-dir bash step fails with "$RECIPE_ENV: ambiguous redirect"
 #     * ROOT CAUSE: $RECIPE_ENV is not an Amplifier mechanism — the variable is
@@ -41,7 +52,7 @@
 #     * RESULT: run_dir propagates correctly through all four stages.
 
 name: director-deck
-version: "0.2.0"
+version: "0.3.0"
 description: >
   Turn a text prompt into a polished PPTX with AI-generated images and
   Veo 3.1 video transitions. Three human review gates ensure aesthetic
@@ -417,6 +428,18 @@ stages:
           actually generate the images and write the files — do not just describe
           what you would do.
 
+          ## ⚠️ SEAMLESS TRANSITION RULE — READ FIRST
+
+          ALL generated images MUST be exactly 1536×864 pixels (16:9).
+          This is non-negotiable. Using any other size — especially 1536×1024
+          (3:2) — causes a visible 150px dimension jump when Veo transition clips
+          play, because Veo outputs 16:9 video. Every image in this pipeline
+          (content images, backdrops) must share the exact same canvas as the
+          Veo output.
+
+          Correct size:   1536×864  (16:9 — use this always)
+          Wrong size:     1536×1024 (3:2 — never use this)
+
           ## Context variables
 
           run_dir        = {{run_dir}}
@@ -459,13 +482,13 @@ stages:
           For each slide N, call the openai_images (or gpt_image) tool twice:
 
           Content image:
-            size:        "1536x1024"
+            size:        "1536x864"    ← REQUIRED for seamless transitions (16:9)
             quality:     "high"
             output_path: {{run_dir}}/assets/slide-{N}-image.png
             prompt:      <content image prompt from Step 3>
 
           Backdrop image:
-            size:        "1536x1024"
+            size:        "1536x864"    ← REQUIRED for seamless transitions (16:9)
             quality:     "high"
             output_path: {{run_dir}}/assets/slide-{N}-backdrop.png
             prompt:      <backdrop prompt from Step 3>
@@ -548,6 +571,17 @@ stages:
           to actually run the commands and generate the videos — do not just
           describe what you would do.
 
+          ## ⚠️ SEAMLESS TRANSITION RULE — READ FIRST
+
+          All keyframe images AND Veo transition clips MUST be 16:9.
+          Veo outputs 16:9 video. If keyframe inputs are a different aspect
+          ratio (e.g. 3:2 = 1536×1024), the transition clip's first/last frames
+          won't match the slides, causing a visible dimension jump (150px+ on
+          each side on a 1920×1080 display).
+
+          Keyframes MUST be 1536×864 (16:9). Veo aspect_ratio MUST be "16:9".
+          duration_seconds MUST be "8" (required minimum for interpolation).
+
           ## Context variables
 
           run_dir       = {{run_dir}}
@@ -556,8 +590,33 @@ stages:
 
           ## Step 1 — Capture keyframes
 
-          Run the following Python command via your bash tool to screenshot every
-          slide from the enriched HTML deck:
+          PREFER pixel slides if they exist — they are already the correct 16:9
+          dimensions (1536×864) and don't need Playwright:
+
+          python -c "
+          from pathlib import Path
+          from director_deck.schema import SlideDeck
+
+          run = Path('{{run_dir}}')
+          deck = SlideDeck.from_file(run / 'slide_deck.json')
+          px_dir = run / 'pixel_slides'
+          kf_dir = run / 'keyframes'
+          kf_dir.mkdir(parents=True, exist_ok=True)
+
+          # Prefer pixel_slides/ (already 16:9), fall back to Playwright
+          import shutil
+          for slide in deck.slides:
+              src = px_dir / f'slide-{slide.id}.png'
+              dst = kf_dir / f'slide-{slide.id}.png'
+              if src.exists():
+                  shutil.copy2(src, dst)
+                  print(f'Copied pixel slide {slide.id}: {dst}')
+              else:
+                  print(f'WARNING: pixel slide {slide.id} missing — will use Playwright')
+          "
+
+          If any pixel slides are missing, fall back to Playwright at EXACTLY
+          1536×864 (not the old 960×540):
 
           python -c "
           from pathlib import Path
@@ -566,19 +625,20 @@ stages:
 
           run = Path('{{run_dir}}')
           deck = SlideDeck.from_file(run / 'slide_deck.json')
+          # width=1536, height=864 → EXACT 16:9 to match Veo output
           paths = screenshot_deck(
               run / 'deck_enriched.html',
               run / 'keyframes',
               slide_count=deck.meta.slide_count,
+              width=1536,
+              height=864,
           )
           for p in paths:
               print(p)
           "
 
-          Expected output: {{run_dir}}/keyframes/slide-N.png for N = 1..slide_count.
-
           If pairs_to_redo is non-empty and keyframes already exist, you may skip
-          re-screenshotting and reuse the existing images.
+          re-capturing and reuse the existing images.
 
           ## Step 2 — Extract DESIGN.md Overview prose
 
@@ -601,15 +661,22 @@ stages:
           For each pair (slide N → slide N+1), call the veo tool with:
             operation:        image_to_video
             model:            veo-3.1-generate-preview
-            image_path:       {{run_dir}}/keyframes/slide-{N}.png
-            last_frame_path:  {{run_dir}}/keyframes/slide-{N+1}.png
+            image_path:       {{run_dir}}/keyframes/slide-{N}.png      ← must be 1536×864 (16:9)
+            last_frame_path:  {{run_dir}}/keyframes/slide-{N+1}.png    ← must be 1536×864 (16:9)
             prompt: >
               Smooth cinematic transition between two presentation slides.
               {DESIGN.md Overview first sentence}. No text overlays, no people,
               no logos. Natural motion flows from the first frame to the second.
-            duration_seconds: "4"
-            aspect_ratio:     "16:9"
+            duration_seconds: "8"     ← REQUIRED minimum for interpolation (last_frame_path)
+            aspect_ratio:     "16:9"  ← must match keyframe ratio exactly
             output_path:      {{run_dir}}/transitions/slide-{N}-to-{N+1}.mp4
+
+          Generate clips SEQUENTIALLY — do not attempt parallel Veo calls.
+
+          ⚠️ SEAMLESS RULE: keyframes and Veo output are both 16:9. The
+          HTML and PPTX must display both at the same pixel dimensions. If the
+          canvas shows the slide at 1536×864, the transition video fills that
+          same 1536×864 canvas — no letterbox, no dimension jump.
 
           Create {{run_dir}}/transitions/ before saving if it does not exist.
           Generate clips SEQUENTIALLY — do not attempt parallel Veo calls.
@@ -650,35 +717,79 @@ stages:
     steps:
 
       - id: assemble-deck
-        # Replaces local agent: deck-stitcher
-        # Runs the director_deck stitcher directly — no LLM needed.
+        # Builds final_deck.pptx using INTERSTITIAL VIDEO SLIDES (add_movie).
+        #
+        # ⚠️ IMPORTANT: Do NOT use pptx_stitcher.embed_transitions here.
+        # embed_transitions injects <p:video> inside <p:transition> XML — that
+        # element does not exist in OOXML and causes PowerPoint to break or
+        # silently ignore the transitions.
+        #
+        # The correct approach: a 19-slide deck where content slides alternate
+        # with full-screen video slides (one per transition). python-pptx's
+        # add_movie() embeds the MP4 correctly as a playable media object.
+        #
+        # ⚠️ SEAMLESS RULE: Prefer pixel_slides/ as content images (already
+        # 1536×864, pure 16:9). Fall back to deck_enriched.pptx assets only if
+        # pixel slides don't exist. The PPTX slide size is 13.33×7.5 inches
+        # (standard 16:9 widescreen). All images and videos must be 16:9.
         type: bash
         timeout: 300
         command: |
           .venv/bin/python -c "
           from pathlib import Path
+          from pptx import Presentation
+          from pptx.util import Inches
+          from pptx.dml.color import RGBColor
           from director_deck.schema import SlideDeck
-          from director_deck.pptx_stitcher import embed_transitions
 
           run = Path('{{run_dir}}')
           deck = SlideDeck.from_file(run / 'slide_deck.json')
+          slides = deck.slides
 
-          transitions = []
-          for slide in deck.slides:
-              if slide.transition_to_next:
-                  mp4_path = run / slide.transition_to_next
-                  if mp4_path.exists():
-                      transitions.append((slide.id, mp4_path))
+          W = Inches(13.33)   # 16:9 widescreen (13.33 x 7.5 inches)
+          H = Inches(7.5)
+
+          prs = Presentation()
+          prs.slide_width  = W
+          prs.slide_height = H
+          BLANK = prs.slide_layouts[6]
+
+          def get_slide_img(slide):
+              # Prefer pixel slide (16:9 native) — fall back to enriched asset
+              px = run / 'pixel_slides' / f'slide-{slide.id}.png'
+              if px.exists(): return px
+              if slide.assets.image:
+                  p = run / slide.assets.image
+                  if p.exists(): return p
+              return None
+
+          for i, slide in enumerate(slides):
+              # ── Content slide: full-bleed image ─────────────────────────
+              img = get_slide_img(slide)
+              s = prs.slides.add_slide(BLANK)
+              if img:
+                  s.shapes.add_picture(str(img), 0, 0, W, H)
+              print(f'  Content slide {slide.id}')
+
+              # ── Interstitial transition slide (between consecutive slides)
+              if i < len(slides) - 1:
+                  mp4 = run / 'transitions' / f'slide-{slide.id}-to-{slides[i+1].id}.mp4'
+                  if mp4.exists():
+                      ts = prs.slides.add_slide(BLANK)
+                      ts.background.fill.solid()
+                      ts.background.fill.fore_color.rgb = RGBColor(0, 0, 0)
+                      ts.shapes.add_movie(str(mp4), 0, 0, W, H, mime_type='video/mp4')
+                      print(f'  Transition {slide.id}→{slides[i+1].id}  ({mp4.stat().st_size//1024}KB)')
                   else:
-                      print(f'WARNING: {mp4_path} not found — skipping transition for slide {slide.id}')
+                      print(f'  WARNING: transition {slide.id}→{slides[i+1].id} not found — skipping')
 
-          result = embed_transitions(
-              run / 'deck_enriched.pptx',
-              transitions,
-              run / 'final_deck.pptx',
-          )
-          print(f'Written: {result}')
-          print(f'Transitions embedded: {len(transitions)}')
+          out = run / 'final_deck.pptx'
+          prs.save(str(out))
+          total = len(prs.slides)
+          content_n = len(slides)
+          trans_n = total - content_n
+          print(f'Written: {out}  ({out.stat().st_size // (1024*1024):.1f}MB)')
+          print(f'Slides: {total} total ({content_n} content + {trans_n} transition videos)')
           "
 
       - id: report

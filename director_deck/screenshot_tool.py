@@ -9,17 +9,27 @@ def screenshot_deck(
     html_path: Path,
     output_dir: Path,
     slide_count: int,
+    *,
+    width: int = 1536,
+    height: int = 864,
 ) -> list[Path]:
     """
     Screenshot each slide div from a rendered HTML deck file.
 
-    Opens headless Chromium at a 960×540 viewport, loads the HTML via file://
-    URL, then captures ``#slide-N`` elements (1-indexed) as PNGs.
+    Opens headless Chromium at a ``width×height`` viewport (default 1536×864,
+    exactly 16:9), loads the HTML via file:// URL, then captures ``#slide-N``
+    elements (1-indexed) as PNGs.
+
+    SEAMLESS TRANSITION RULE: width×height must match the aspect ratio of Veo
+    output (16:9). The default 1536×864 ensures keyframe PNGs and Veo clips
+    share the exact same canvas — no dimension jump when transitions play.
 
     Args:
         html_path: Absolute (or resolvable) path to the deck HTML file.
         output_dir: Directory to write PNGs into (created if it does not exist).
         slide_count: Number of slides to capture; must match actual slide divs.
+        width: Viewport width in pixels. Default 1536 (16:9).
+        height: Viewport height in pixels. Default 864 (16:9).
 
     Returns:
         List of Paths to the created PNG files in slide order:
@@ -33,7 +43,7 @@ def screenshot_deck(
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 960, "height": 540})
+        page = browser.new_page(viewport={"width": width, "height": height})
         page.goto(f"file://{html_path.resolve()}")
         page.wait_for_load_state("networkidle")
 
