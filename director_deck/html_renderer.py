@@ -284,7 +284,15 @@ _LAYOUT_CSS = """\
 
 
 def _render_slide_div(slide: "Slide", *, enriched: bool = False) -> str:
-    """Render a single slide as a 960×540 <div id='slide-N'> using the slide's layout_type."""
+    """Render a single slide as a 960×540 <div id='slide-N'> using the slide's layout_type.
+
+    Embeds transition timing as data attributes so the HTML player can drive
+    each transition at the correct duration without hardcoding:
+      data-transition-duration="2.5"   (seconds, from slide.transition_duration_s)
+      data-transition-easing="ease_in_out"
+
+    These are read by deck_live.html's JS to set the correct video timing.
+    """
     layout = slide.layout_type
 
     # Backdrop style (enriched mode)
@@ -300,6 +308,15 @@ def _render_slide_div(slide: "Slide", *, enriched: bool = False) -> str:
     badge = f'<div class="layout-badge">{layout.replace("_", " ")}</div>'
 
     layout_class = f"layout-{layout.replace('_', '-')}"
+
+    # Transition timing data attributes — read by deck_live.html JS to set
+    # each transition's duration. duration is the outgoing video duration in
+    # seconds (after ffmpeg retiming); easing is informational.
+    dur = slide.transition_duration_s if slide.transition_duration_s is not None else ""
+    trans_attrs = (
+        f' data-transition-duration="{dur}"'
+        f' data-transition-easing="{slide.transition_easing}"'
+    )
 
     # ── HERO layout ──────────────────────────────────────────────────────────
     if layout == "hero":

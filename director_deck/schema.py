@@ -36,14 +36,35 @@ class SlideAssets(BaseModel):
 class Slide(BaseModel):
     id: int
     title: str
+    layout_type: LayoutType = "bullets"
+    hero_statement: Optional[str] = None  # For hero/statement layouts: the "so what?" conclusion (replaces bullets)
     bullets: list[str]
     speaker_notes: str
     image_brief: str
     backdrop_brief: str
-    layout_type: LayoutType = "bullets"
-    hero_statement: Optional[str] = None  # For hero/statement layouts: the "so what?" conclusion (replaces bullets)
     assets: SlideAssets = SlideAssets()
     transition_to_next: Optional[str] = None
+    # ── Transition timing ────────────────────────────────────────────────────
+    # Target duration (seconds) for the outgoing Veo clip AFTER ffmpeg retiming.
+    # None = derive from video_processor.suggest_transition_duration(prev, this).
+    transition_duration_s: Optional[float] = Field(
+        default=None,
+        ge=0.5,
+        le=6.0,
+        description=(
+            "Desired length of the outgoing transition video after ffmpeg retiming. "
+            "None → derived from suggest_transition_duration(prev_layout, self.layout_type)."
+        ),
+    )
+    # Easing applied by ffmpeg when retiming the Veo clip.
+    transition_easing: Literal["linear", "ease_in", "ease_out", "ease_in_out"] = Field(
+        default="ease_in_out",
+        description=(
+            "ease_in_out (default): natural Veo frames held at both ends, "
+            "visual change compressed through the middle. "
+            "linear: simple speed multiplier."
+        ),
+    )
 
 
 class DeckMeta(BaseModel):
