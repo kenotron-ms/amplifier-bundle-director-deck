@@ -561,6 +561,9 @@ stages:
               DESIGN RULES (follow strictly — from DESIGN.md ## Do's and Don'ts):
               {DESIGN.md ## Do's and Don'ts verbatim}
 
+              SAFE ZONE (from DESIGN.md ## Safe Zone & Composition — mandatory):
+              {DESIGN.md ## Safe Zone & Composition verbatim}
+
               LEGIBILITY & ACCESSIBILITY (non-negotiable):
               {DESIGN.md ## Legibility & Accessibility verbatim}
               ADDITIONAL RULES:
@@ -569,6 +572,17 @@ stages:
               - Body text: meets minimum 4.5:1 contrast against immediate background
               - If text overlaps imagery: render a dark gradient scrim behind the text
               - No text may be partially obscured, blurred, or illegible
+
+              ⚠️ SAFE ZONE — NON-NEGOTIABLE — READ BEFORE PLACING ANY TEXT:
+              The slide will be center-cropped and displayed at various sizes.
+              Text outside the safe zone WILL be cut off and invisible to the audience.
+              ALL text (titles, headlines, stats, bullets, footnotes, labels) MUST
+              fall ENTIRELY within this rectangle on a 1536×864 canvas:
+                X: 120px → 1416px  (leave 120px clear on left AND right)
+                Y: 130px → 734px   (leave 130px clear on TOP AND BOTTOM)
+              Footnotes and citations: place between y=700 and y=734 only. Never lower.
+              Background imagery may bleed to full edges. Only TEXT has this constraint.
+              When in doubt, move text MORE toward the center. Closer is safer.
 
               TECHNICAL:
               - 1536×864 pixels, 16:9 widescreen presentation format
