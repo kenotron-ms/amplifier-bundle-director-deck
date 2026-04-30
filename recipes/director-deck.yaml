@@ -52,7 +52,7 @@
 #     * RESULT: run_dir propagates correctly through all four stages.
 
 name: director-deck
-version: "0.3.0"
+version: "0.4.0"
 description: >
   Turn a text prompt into a polished PPTX with AI-generated images and
   Veo 3.1 video transitions. Three human review gates ensure aesthetic
@@ -396,7 +396,19 @@ stages:
           specifically belongs, what to never include. These feed directly into
           image and video generation prompts so be specific.
 
-          Infer from topic/tone:
+          ## Legibility & Accessibility (REQUIRED — always include)
+              Specify every text/background pairing with estimated contrast ratio.
+              Standards: 4.5:1 for body text, 3:1 for large headings (≥24px bold).
+              For each surface, state which text color sits on it and passes/fails.
+              Specify required dark scrim opacity for any text-over-imagery cases.
+              This section is read verbatim by the slide frame generator — be precise.
+              Example format:
+                "on-surface (#E2E8F0) on primary (#0A0E1A) ≈ 13:1 ✓ highly legible.
+                accent (#F59E0B) on primary ≈ 6.8:1 ✓ acceptable for large headings.
+                NEVER place body text on accent or bright imagery without a dark
+                gradient scrim at ≥65% opacity behind the text block."
+
+                        Infer from topic/tone:
           - Executive / formal → dark background, muted palette, neutral sans-serif
           - Consumer / startup → high contrast, energetic accent, modern sans-serif
           - Healthcare / legal → clean light background, trustworthy blues or greens
@@ -467,150 +479,217 @@ stages:
   - name: visual-generation
     steps:
 
-      - id: generate-images
-        # Replaces local agent: visual-director
-        # Inlines the full visual-director system prompt and instructions.
-        # Requires an openai_images (or gpt_image) tool in the agent sub-session.
-        # If foundation:zen-architect is not configured with that tool, add it
-        # via agent_config: { tools: [{ module: "tool-openai-images" }] }.
-        type: agent
-        agent: self
-        timeout: 3600
-        prompt: |
-          You are the Visual Director for Director Deck. Generate two images per
-          slide and update slide_deck.json with their paths. Use your tools to
-          actually generate the images and write the files — do not just describe
-          what you would do.
+      - id: generate-slide-frames
+            # NEW v0.4.0: Replaces generate-images + build-enriched.
+            # Instead of generating backdrop/content images separately and compositing
+            # in HTML, GPT Image renders each slide as a single complete image —
+            # background atmosphere, text, layout, and visual elements in one shot.
+            # GPT Image's text-rendering intelligence produces more coherent slides
+            # than CSS compositing. Output goes directly to pixel_slides/ (used by
+            # transitions step and final assembly — no HTML enrichment step needed).
+            type: agent
+            agent: self
+            timeout: 3600
+            prompt: |
+              You are the Slide Frame Director for Director Deck. Generate each
+              presentation slide as a SINGLE, COMPLETE image using the gpt_image tool.
+              Do NOT generate separate backdrop and content images and try to composite
+              them. Generate the entire slide — atmosphere, typography, layout, visual
+              elements — as one unified image that GPT Image composes holistically.
 
-          ## ⚠️ SEAMLESS TRANSITION RULE — READ FIRST
+              ## ⚠️ SIZE: 1536×864 (16:9) — NON-NEGOTIABLE
+              Every slide image MUST be 1536×864 pixels.
+              Use size "1536x864" in every gpt_image call.
+              This exact size is required for seamless Veo transition interpolation.
 
-          ALL generated images MUST be exactly 1536×864 pixels (16:9).
-          This is non-negotiable. Using any other size — especially 1536×1024
-          (3:2) — causes a visible 150px dimension jump when Veo transition clips
-          play, because Veo outputs 16:9 video. Every image in this pipeline
-          (content images, backdrops) must share the exact same canvas as the
-          Veo output.
+              ## Context variables
 
-          Correct size:   1536×864  (16:9 — use this always)
-          Wrong size:     1536×1024 (3:2 — never use this)
+              run_dir        = {{run_dir}}
+              slides_to_redo = {{_approval_message}}
+              (empty on first run — generate ALL slides)
 
-          ## Context variables
+              ## Step 1 — Read inputs
 
-          run_dir        = {{run_dir}}
-          slides_to_redo = {{_approval_message}}
-          (slides_to_redo is empty on the first run — generate ALL slides)
+              Read these files:
+              1. {{run_dir}}/slide_deck.json — all slide content
+              2. {{run_dir}}/DESIGN.md — extract ALL sections:
+                 - YAML frontmatter (primary, accent, surface, on-surface hex values)
+                 - ## Overview prose (inject verbatim into every prompt)
+                 - ## Colors (role of each color)
+                 - ## Do's and Don'ts (strict generation rules)
+                 - ## Legibility & Accessibility (contrast rules, scrim requirements)
 
-          ## Step 1 — Read inputs
+              ## Step 2 — Determine which slides to process
 
-          From {{run_dir}}:
-          1. Read slide_deck.json — contains image_brief and backdrop_brief per slide
-          2. Read DESIGN.md — extract:
-             a. The ## Overview section prose (text between ## Overview and the
-                next ## heading) — use first sentence as style context
-             b. The colors block from the YAML frontmatter (primary, accent)
+              If slides_to_redo is non-empty (e.g. "3,5"), process only those IDs.
+              If empty, process all slides.
 
-          ## Step 2 — Determine which slides to process
+              ## Step 3 — Build prompt per slide
 
-          If slides_to_redo is non-empty, parse as comma-separated integers
-          (e.g. "3,5") and process only those slide IDs. Preserve all existing
-          assets values for slides not in the list.
+              For each slide N, construct this prompt (fill in all placeholders):
 
-          If slides_to_redo is empty, process all slides.
+              ---
+              Render a complete professional presentation slide as a single image.
+              This is slide {N} of {total} in a business presentation deck.
 
-          ## Step 3 — Construct prompts
+              SLIDE LAYOUT: {layout_type}
+              hero        = large centered statement over full-bleed atmospheric background
+              stat_callout= enormous number/stat centered, supporting label below it
+              statement   = large centered text only, section divider, no imagery
+              full_bleed  = full-screen imagery with minimal text overlay at bottom
+              bullets     = title at top + bullet list filling the slide
+              comparison  = two equal columns side-by-side with column headers
+              timeline    = title + horizontal/diagonal progression of dated events
+              process_flow= title + numbered sequential steps
+              quote       = large italic blockquote centered with attribution below
 
-          For each slide N to process, build:
+              TEXT TO RENDER (reproduce this text EXACTLY, clearly legible):
+              {layout-specific content — map below}
 
-          Content image prompt:
-            "{slide.image_brief}. Visual style: {first sentence of DESIGN.md Overview}.
-            Accent color: {colors.accent}. Cinematic composition, no text, no logos,
-            no watermarks."
+              VISUAL ATMOSPHERE:
+              {slide.image_brief}
+              Background mood: {slide.backdrop_brief}
 
-          Backdrop image prompt:
-            "{slide.backdrop_brief}. Abstract, no text, no people, no logos.
-            Mood: {first sentence of DESIGN.md Overview}. Dominant color: {colors.primary}.
-            Full-bleed background. Subtle texture."
+              DESIGN IDENTITY — apply this aesthetic faithfully:
+              {DESIGN.md ## Overview verbatim}
 
-          ## Step 4 — Generate images
+              COLOR PALETTE:
+              Background: {primary hex} — {description from ## Colors}
+              Accent/headlines: {accent hex} — {description from ## Colors}
+              Body text: {on_surface hex} — {description from ## Colors}
 
-          For each slide N, call the openai_images (or gpt_image) tool twice:
+              DESIGN RULES (follow strictly — from DESIGN.md ## Do's and Don'ts):
+              {DESIGN.md ## Do's and Don'ts verbatim}
 
-          Content image:
-            size:        "1536x864"    ← REQUIRED for seamless transitions (16:9)
-            quality:     "high"
-            output_path: {{run_dir}}/assets/slide-{N}-image.png
-            prompt:      <content image prompt from Step 3>
+              LEGIBILITY & ACCESSIBILITY (non-negotiable):
+              {DESIGN.md ## Legibility & Accessibility verbatim}
+              ADDITIONAL RULES:
+              - Every text element must be clearly readable at presentation distance
+              - Title/headline: large, bold, high contrast against its background
+              - Body text: meets minimum 4.5:1 contrast against immediate background
+              - If text overlaps imagery: render a dark gradient scrim behind the text
+              - No text may be partially obscured, blurred, or illegible
 
-          Backdrop image:
-            size:        "1536x864"    ← REQUIRED for seamless transitions (16:9)
-            quality:     "high"
-            output_path: {{run_dir}}/assets/slide-{N}-backdrop.png
-            prompt:      <backdrop prompt from Step 3>
+              TECHNICAL:
+              - 1536×864 pixels, 16:9 widescreen presentation format
+              - No watermarks, borders, slide numbers, or UI artifacts
+              - Professional finish, zero placeholder elements
+              ---
 
-          Ensure {{run_dir}}/assets/ exists before saving (mkdir -p via bash tool
-          if needed).
+              TEXT CONTENT MAPPING BY LAYOUT TYPE:
+              - hero: "HERO STATEMENT (large, centered, accent color): {hero_statement}"
+                      + if bullets[0]: "SUB-LINE (smaller, below statement): {bullets[0]}"
+              - statement: "LARGE CENTERED TEXT (accent or on-surface color): {hero_statement or title}"
+              - stat_callout: "LARGE STAT (enormous, centered, accent color): {hero_statement}"
+                              "SUPPORTING LABEL (body size, centered below): {bullets[0]}"
+              - quote: "QUOTE (large italic, centered): {hero_statement}"
+                       "ATTRIBUTION (small caps, below): — {bullets[0]}"
+              - full_bleed: "TEXT OVERLAY (bottom, over dark gradient): {hero_statement or title}"
+              - bullets: "SLIDE TITLE (top, accent color): {title}"
+                         "BULLET LIST (body text, arrow prefix →):"
+                         {each bullet on its own line}
+              - comparison: "SLIDE TITLE: {title}"
+                            Split title at ' / ' for column headers
+                            "LEFT COLUMN HEADER: {left_header}"
+                            LEFT BULLETS: {bullets[:mid]}
+                            "RIGHT COLUMN HEADER: {right_header}"
+                            RIGHT BULLETS: {bullets[mid:]}
+              - timeline: "SLIDE TITLE: {title}"
+                          "TIMELINE ENTRIES (show as visual progression):"
+                          {each bullet as a node}
+              - process_flow: "SLIDE TITLE: {title}"
+                              "NUMBERED STEPS:"
+                              {each bullet}
 
-          ## Step 5 — Update slide_deck.json
+              ## Step 4 — Generate images
 
-          After generating images for all target slides, update
-          {{run_dir}}/slide_deck.json. For each processed slide set:
-            "assets": {
-              "image": "assets/slide-{N}-image.png",
-              "backdrop": "assets/slide-{N}-backdrop.png"
-            }
+              Ensure {{run_dir}}/pixel_slides/ directory exists.
 
-          Do NOT modify assets for slides that were not processed (when
-          slides_to_redo was set). Write the updated file back to disk.
+              For each slide N to process, call gpt_image:
+                operation:   "generate"
+                model:       "gpt-image-2"
+                size:        "2560x1440"  ← 2K 16:9, in enum, no crop needed
+              Do not skip any slide.
 
-          ## After completing
+              ## After completing
 
-          Output:
-          ✓ Slide 1: assets/slide-1-image.png, assets/slide-1-backdrop.png
-          ✓ Slide 2: assets/slide-2-image.png, assets/slide-2-backdrop.png
-          ...
-          ✓ slide_deck.json updated — {N} slides with assets
+              ✓ pixel_slides/slide-1.png
+              ✓ pixel_slides/slide-2.png
+              ...
+              ✓ pixel_slides/slide-{N}.png
+              All {N} slide frames generated as complete unified images.
 
-      - id: build-enriched
-        # Replaces local agent: slide-architect (mode: enriched)
-        # Runs the director_deck Python utilities directly — no LLM needed.
-        type: bash
-        timeout: 300
-        command: |
-          .venv/bin/python -c "
-          from pathlib import Path
-          from director_deck.schema import SlideDeck, DesignTokens
-          from director_deck.html_renderer import write_deck_html
-          from director_deck.pptx_builder import build_pptx
-
-          run = Path('{{run_dir}}')
-          deck = SlideDeck.from_file(run / 'slide_deck.json')
-          tokens = DesignTokens.from_design_md(run / 'DESIGN.md')
-          write_deck_html(deck, tokens, run / 'deck_enriched.html', enriched=True)
-          build_pptx(deck, tokens, run / 'deck_enriched.pptx', enriched=True)
-          print('done')
-          "
-
+    
     approval:
       required: true
       prompt: |
-        Review the enriched deck with all AI-generated images in place.
+            Review the generated slide frames before transition generation begins.
 
-          Open in browser: {{run_dir}}/deck_enriched.html
+              Open directory: {{run_dir}}/pixel_slides/
+              Preview each slide-N.png as a complete, final slide image.
 
-        You may request specific re-generations in the approval message, e.g.:
-          "redo slide 5 backdrop — too busy. slide 3 image looks great."
-        generate-images will regenerate only the named assets.
+            Request specific re-generations in the approval message, e.g.:
+              "redo slides 3,5 — text too small on 3, wrong colors on 5"
+            generate-slide-frames will regenerate only the named slides.
 
-        Approve when: images match the brief, backdrops don't compete with text,
-        overall aesthetic is consistent with the DESIGN.md identity.
-      timeout: 0
-      default: "deny"
+            Approve when: all slides are legible, text is clearly readable,
+            visual identity is consistent, deck looks polished end-to-end.
+          timeout: 0
+          default: "deny"
 
   # ── Stage 3: Transitions ───────────────────────────────────────────────────
   - name: transitions
     steps:
 
-      - id: make-transitions
+      - id: prepare-keyframes
+        # Prepares 1536×864 keyframes for Veo from pixel_slides/.
+        # pixel_slides/ may be any size; this step scales/crops to exact 1536×864.
+        # stat_callout slides get a center-band blur so Veo can't read the large
+        # number and hallucinate context (e.g. "SLA achieved" for 99.03%).
+        # Only the center vertical band is blurred — background stays sharp.
+        type: bash
+        timeout: 120
+        command: |
+          .venv/bin/python -c "
+          import json
+          from pathlib import Path
+          from PIL import Image, ImageFilter
+
+          run    = Path('{{run_dir}}')
+          kf_dir = run / 'keyframes'
+          kf_dir.mkdir(exist_ok=True)
+          slides = json.loads((run / 'slide_deck.json').read_text())['slides']
+          total  = len(slides)
+
+          tw, th = 1536, 864
+          disp_dir = run / 'display_slides'
+          disp_dir.mkdir(exist_ok=True)
+
+          for i, slide in enumerate(slides):
+              src = run / 'pixel_slides' / f'slide-{slide["id"]}.png'
+              if not src.exists():
+                  print(f'  WARNING: {src.name} missing')
+                  continue
+              img = Image.open(src).convert('RGB')
+              sw, sh = img.size
+              # Center-crop to 16:9
+              if sw/sh > tw/th:
+                  new_w = int(sh * tw / th)
+                  img = img.crop(((sw-new_w)//2, 0, (sw+new_w)//2, sh))
+              else:
+                  new_h = int(sw * th / tw)
+                  img = img.crop((0, (sh-new_h)//2, sw, (sh+new_h)//2))
+              img = img.resize((tw, th), Image.LANCZOS)
+              # Both display_slides and keyframes are identical — clean, no blur.
+              # Veo receives the real unmodified keyframe and is instructed
+              # via prompt not to invent new statistics or visual elements.
+              img.save(disp_dir / src.name, 'PNG')
+              img.save(kf_dir / src.name, 'PNG')
+              print(f'  {src.name}: {sw}x{sh} → {tw}x{th}')
+          print('done')
+          "
+
+          - id: make-transitions
         # Replaces local agent: transition-director
         # Inlines the full transition-director system prompt and instructions.
         # Requires: bash tool (for Playwright screenshots) + veo tool
@@ -712,18 +791,51 @@ stages:
 
           ## Step 4 — Generate transition clips
 
-          For each pair (slide N → slide N+1), call the veo tool with:
+          PROMPT RULE — the #1 cause of invented text is using the word
+          "presentation" or "slide" in the prompt. Veo associates those words
+          with "generate slide content including text and charts" and does so
+          in intermediate frames. The fix: describe it as a CINEMATIC SCENE,
+          never as a slide or presentation.
+
+          PROMPT FORMULA — use EXACTLY this, fill in [SPEED], [CAMERA], [FOCUS]:
+
+            "[SPEED] cinematic animation. [CAMERA]. Focus on [FOCUS] — hold
+            the viewer's eye on it as it morphs and carries through into the
+            next scene. Do not invent, alter, or add any new statistics,
+            numbers, charts, or text that do not appear in the first or last
+            frame. Animate only what is already present in both frames."
+
+          [SPEED]:
+            "Slow" — hero, statement, full_bleed, quote
+            "Medium" — stat_callout, bullets, timeline, comparison
+
+          [CAMERA]:
+            "Camera holds still" — hero, statement, stat_callout, quote
+            "Slow camera drift" — full_bleed, bullets
+            "Slight pull back" — comparison, timeline
+
+          [FOCUS] — describe by position/shape only, never quote the text:
+            stat_callout   → "the large bright shape at the center of the frame"
+            hero/statement → "the bright horizontal band at the center of the frame"
+            full_bleed     → "the dominant light source in the scene"
+            bullets        → "the bright element at the top of the frame"
+            timeline       → "the glowing node at the right end of the line"
+            comparison     → "the bright vertical line at the center of the frame"
+            quote          → "the central text block"
+
+          NEVER use the words: "presentation", "slide", "deck", "infographic",
+          "PowerPoint", "chart", "data visualization". These trigger Veo to
+          generate slide-like content in intermediate frames.
+
+          Then call the veo tool with:
             operation:        image_to_video
             model:            veo-3.1-generate-preview
-            image_path:       {{run_dir}}/keyframes/slide-{N}.png      ← must be 1536×864 (16:9)
-            last_frame_path:  {{run_dir}}/keyframes/slide-{N+1}.png    ← must be 1536×864 (16:9)
-            prompt: >
-              Smooth cinematic transition between two presentation slides.
-              {DESIGN.md Overview first sentence}. No text overlays, no people,
-              no logos. Natural motion flows from the first frame to the second.
-            duration_seconds: "8"     ← REQUIRED minimum for interpolation (last_frame_path)
-            aspect_ratio:     "16:9"  ← must match keyframe ratio exactly
-            output_path:      {{run_dir}}/transitions/slide-{N}-to-{N+1}.mp4
+            image_path:       {{run_dir}}/keyframes/slide-{N}.png
+            last_frame_path:  {{run_dir}}/keyframes/slide-{N+1}.png
+            prompt:           <constructed from formula above>
+            duration_seconds: "8"
+            aspect_ratio:     "16:9"
+            output_path:      {{run_dir}}/transitions_raw/slide-{N}-to-{N+1}.mp4
 
           Generate clips SEQUENTIALLY — do not attempt parallel Veo calls.
 
@@ -732,31 +844,81 @@ stages:
           canvas shows the slide at 1536×864, the transition video fills that
           same 1536×864 canvas — no letterbox, no dimension jump.
 
-          Create {{run_dir}}/transitions/ before saving if it does not exist.
+          Create {{run_dir}}/transitions_raw/ before saving if it does not exist.
           Generate clips SEQUENTIALLY — do not attempt parallel Veo calls.
 
           ## Step 5 — Update slide_deck.json
 
-          After generating all clips, populate transition_to_next for each
-          processed slide:
-            "transition_to_next": "transitions/slide-{N}-to-{N+1}.mp4"
+          After generating all clips, record the raw paths:
+            "transition_to_next": "transitions_raw/slide-{N}-to-{N+1}.mp4"
 
           The final slide always has "transition_to_next": null.
           Write the updated slide_deck.json back to {{run_dir}}/slide_deck.json.
+          The process-transitions step (next) will update these paths to
+          the final processed files in transitions/.
 
           ## After completing
 
           Output:
           ✓ keyframes: slide-1.png … slide-{N}.png
-          ✓ transitions: slide-1-to-2.mp4 … slide-{N-1}-to-{N}.mp4
-          ✓ slide_deck.json updated with transition_to_next paths
+          ✓ transitions_raw: slide-1-to-2.mp4 … slide-{N-1}-to-{N}.mp4 (raw Veo)
+          ✓ slide_deck.json updated with transitions_raw paths (temporary)
+
+      - id: process-transitions
+        # Post-process raw Veo clips: strip AI audio + retime with easing.
+        # Reads transition_duration_s and transition_easing from slide_deck.json.
+        # Input:  transitions_raw/slide-N-to-M.mp4  (raw 8s Veo output)
+        # Output: transitions/slide-N-to-M.mp4      (final, no audio, retimed)
+        # Updates slide_deck.json transition_to_next to point to transitions/ paths.
+        type: bash
+        timeout: 600
+        command: |
+          .venv/bin/python -c "
+          from pathlib import Path
+          from director_deck.schema import SlideDeck
+          from director_deck.video_processor import process_transition, suggest_transition_duration
+
+          run = Path('{{run_dir}}')
+          deck = SlideDeck.from_file(run / 'slide_deck.json')
+          slides = deck.slides
+          out_dir = run / 'transitions'
+          out_dir.mkdir(exist_ok=True)
+
+          for i, slide in enumerate(slides[:-1]):
+              next_slide = slides[i + 1]
+              raw = run / 'transitions_raw' / f'slide-{slide.id}-to-{next_slide.id}.mp4'
+              out = out_dir / f'slide-{slide.id}-to-{next_slide.id}.mp4'
+
+              if not raw.exists():
+                  print(f'  WARNING: {raw.name} not found, skipping')
+                  continue
+
+              target = slide.transition_duration_s or suggest_transition_duration(
+                  slide.layout_type, next_slide.layout_type
+              )
+              easing = slide.transition_easing or 'ease_in_out'
+
+              process_transition(raw, out, target_duration_s=target, easing=easing)
+              print(f'  {out.name}: {target}s {easing} (raw {raw.stat().st_size//1024}KB -> {out.stat().st_size//1024}KB)')
+
+          # Update slide_deck.json to final transitions/ paths
+          import json
+          data = json.loads((run / 'slide_deck.json').read_text())
+          for i, s in enumerate(data['slides'][:-1]):
+              next_id = data['slides'][i + 1]['id']
+              s['transition_to_next'] = f'transitions/slide-{s["id"]}-to-{next_id}.mp4'
+          data['slides'][-1]['transition_to_next'] = None
+          (run / 'slide_deck.json').write_text(json.dumps(data, indent=2, ensure_ascii=False))
+          print('slide_deck.json updated — transition_to_next now points to processed transitions/')
+          "
 
     approval:
       required: true
       prompt: |
-        Preview the transition clips. A deck with N slides has N-1 clips.
+        Preview the processed transition clips (audio stripped, retimed).
 
-          Open directory: {{run_dir}}/transitions/
+          Open directory: {{run_dir}}/transitions/          (processed, no audio)
+          Raw Veo clips:  {{run_dir}}/transitions_raw/      (original 8s clips)
 
         You may request specific clip regenerations in the approval message, e.g.:
           "redo slide 2 to 3 — motion feels wrong. rest is good."
@@ -808,21 +970,34 @@ stages:
           prs.slide_height = H
           BLANK = prs.slide_layouts[6]
 
+          from PIL import Image as _PIL
+          from pptx.dml.color import RGBColor
+
           def get_slide_img(slide):
-              # Prefer pixel slide (16:9 native) — fall back to enriched asset
-              px = run / 'pixel_slides' / f'slide-{slide.id}.png'
-              if px.exists(): return px
+              # display_slides/ = 16:9 center-crop, no blur — primary source for PPTX
+              for d in ['display_slides', 'pixel_slides']:
+                  p = run / d / f'slide-{slide.id}.png'
+                  if p.exists(): return p
               if slide.assets.image:
                   p = run / slide.assets.image
                   if p.exists(): return p
               return None
 
           for i, slide in enumerate(slides):
-              # ── Content slide: full-bleed image ─────────────────────────
+              # ── Content slide ──────────────────────────────────────────────────────
               img = get_slide_img(slide)
               s = prs.slides.add_slide(BLANK)
+              s.background.fill.solid()
+              s.background.fill.fore_color.rgb = RGBColor(0, 0, 0)
               if img:
-                  s.shapes.add_picture(str(img), 0, 0, W, H)
+                  with _PIL.open(img) as _im: _iw, _ih = _im.size
+                  _r = _iw / _ih; _sw, _sh = 13.33, 7.5
+                  if _r > _sw / _sh:
+                      _pw = _sw; _ph = _pw / _r; _l = 0;    _t = (_sh - _ph) / 2
+                  else:
+                      _ph = _sh; _pw = _ph * _r; _t = 0;    _l = (_sw - _pw) / 2
+                  s.shapes.add_picture(str(img), Inches(_l), Inches(_t),
+                                       Inches(_pw), Inches(_ph))
               print(f'  Content slide {slide.id}')
 
               # ── Interstitial transition slide (between consecutive slides)
@@ -844,6 +1019,36 @@ stages:
           trans_n = total - content_n
           print(f'Written: {out}  ({out.stat().st_size // (1024*1024):.1f}MB)')
           print(f'Slides: {total} total ({content_n} content + {trans_n} transition videos)')
+
+          # Fix PPTX video slides — four python-pptx bugs patched:
+          #   1. hlinkClick r:id="" — set to media rId so click-to-play works
+          #   2. delay='indefinite' — changed to '0' so video autoplays on entry
+          #   3. poster frame = shared speaker icon — replaced per-slide with the
+          #      correct source slide image (no icon flash, seamless appearance)
+          #   4. auto-advance not set — adds <p:transition advTm="{ms}"/> BEFORE
+          #      <p:timing> (correct OOXML order), sets root cTn dur+fill="hold"
+          #      and media cTn dur so slide advances cleanly when video ends
+          from director_deck.pptx_fixer import fix_video_slides
+          from director_deck.schema import SlideDeck as _SlideDeck
+          _deck2 = _SlideDeck.from_file(run / 'slide_deck.json')
+          _durations = [
+              s.transition_duration_s
+              for s in _deck2.slides[:-1]
+              if (run / f'transitions/slide-{s.id}-to-{_deck2.slides[_deck2.slides.index(s)+1].id}.mp4').exists()
+          ]
+          fixed = fix_video_slides(
+              out,
+              keyframe_dir      = run / 'display_slides',
+              slide_durations_s = _durations,
+          )
+          print(f'PPTX fixed: {fixed} video slides (poster frames replaced, auto-advance set)')
+
+          # Always emit HTML player alongside PPTX
+          from director_deck.html_renderer import write_live_html
+          from director_deck.schema import DesignTokens
+          _tokens = DesignTokens.from_design_md(run / 'DESIGN.md')
+          write_live_html(deck, run, run / 'deck_live.html', tokens=_tokens)
+          print(f'HTML player written: {run}/deck_live.html')
           "
 
       - id: report
