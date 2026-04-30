@@ -480,17 +480,17 @@ stages:
     steps:
 
       - id: generate-slide-frames
-            # NEW v0.4.0: Replaces generate-images + build-enriched.
-            # Instead of generating backdrop/content images separately and compositing
-            # in HTML, GPT Image renders each slide as a single complete image —
-            # background atmosphere, text, layout, and visual elements in one shot.
-            # GPT Image's text-rendering intelligence produces more coherent slides
-            # than CSS compositing. Output goes directly to pixel_slides/ (used by
-            # transitions step and final assembly — no HTML enrichment step needed).
-            type: agent
-            agent: self
-            timeout: 3600
-            prompt: |
+        # NEW v0.4.0: Replaces generate-images + build-enriched.
+        # Instead of generating backdrop/content images separately and compositing
+        # in HTML, GPT Image renders each slide as a single complete image —
+        # background atmosphere, text, layout, and visual elements in one shot.
+        # GPT Image's text-rendering intelligence produces more coherent slides
+        # than CSS compositing. Output goes directly to pixel_slides/ (used by
+        # transitions step and final assembly — no HTML enrichment step needed).
+        type: agent
+        agent: self
+        timeout: 3600
+        prompt: |
               You are the Slide Frame Director for Director Deck. Generate each
               presentation slide as a SINGLE, COMPLETE image using the gpt_image tool.
               Do NOT generate separate backdrop and content images and try to composite
@@ -648,8 +648,8 @@ stages:
 
             Approve when: all slides are legible, text is clearly readable,
             visual identity is consistent, deck looks polished end-to-end.
-          timeout: 0
-          default: "deny"
+      timeout: 0
+      default: "deny"
 
   # ── Stage 3: Transitions ───────────────────────────────────────────────────
   - name: transitions
@@ -680,7 +680,8 @@ stages:
           disp_dir.mkdir(exist_ok=True)
 
           for i, slide in enumerate(slides):
-              src = run / 'pixel_slides' / f'slide-{slide["id"]}.png'
+              s_id = slide['id']
+              src = run / 'pixel_slides' / f'slide-{s_id}.png'
               if not src.exists():
                   print(f'  WARNING: {src.name} missing')
                   continue
@@ -703,7 +704,7 @@ stages:
           print('done')
           "
 
-          - id: make-transitions
+      - id: make-transitions
         # Replaces local agent: transition-director
         # Inlines the full transition-director system prompt and instructions.
         # Requires: bash tool (for Playwright screenshots) + veo tool
@@ -920,7 +921,8 @@ stages:
           data = json.loads((run / 'slide_deck.json').read_text())
           for i, s in enumerate(data['slides'][:-1]):
               next_id = data['slides'][i + 1]['id']
-              s['transition_to_next'] = f'transitions/slide-{s["id"]}-to-{next_id}.mp4'
+              s_id = s['id']; next_id = data['slides'][i + 1]['id']
+              s['transition_to_next'] = f'transitions/slide-{s_id}-to-{next_id}.mp4'
           data['slides'][-1]['transition_to_next'] = None
           (run / 'slide_deck.json').write_text(json.dumps(data, indent=2, ensure_ascii=False))
           print('slide_deck.json updated — transition_to_next now points to processed transitions/')
