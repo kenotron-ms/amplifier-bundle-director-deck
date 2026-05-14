@@ -13,17 +13,26 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # ---------------------------------------------------------------------------
 
 
-LayoutType = Literal[
-    "bullets",        # title + bullets + image (default, current layout)
-    "hero",           # full-bleed backdrop + one punchy centered statement
-    "statement",      # section divider — large centered text, no image
-    "stat_callout",   # big number/stat + brief context
-    "comparison",     # two-column side-by-side
-    "quote",          # blockquote + attribution
-    "process_flow",   # numbered steps/workflow
-    "timeline",       # sequential horizontal/vertical progression
-    "full_bleed",     # full-bleed image with minimal text overlay
-]
+# Free-form string — any descriptive value is valid.
+# When generating from a text prompt, prefer one of the 9 preset values below
+# so the wireframe renderer and slide-frame generator can apply known defaults.
+# When translating an existing deck (pptx_input mode), use any string that
+# accurately describes the actual slide layout (e.g. "title_and_chart",
+# "four_quadrants", "photo_mosaic", "big_number_with_callout", etc.).
+LayoutType = str
+
+# Preset layout types — preferred for fresh generation; optional for PPTX mode.
+PRESET_LAYOUT_TYPES = (
+    "bullets",  # title + bullets + image (default)
+    "hero",  # full-bleed backdrop + one punchy centered statement
+    "statement",  # section divider — large centered text, no image
+    "stat_callout",  # big number/stat + brief context
+    "comparison",  # two-column side-by-side
+    "quote",  # blockquote + attribution
+    "process_flow",  # numbered steps/workflow
+    "timeline",  # sequential horizontal/vertical progression
+    "full_bleed",  # full-bleed image with minimal text overlay
+)
 
 
 class SlideAssets(BaseModel):
@@ -37,13 +46,19 @@ class Slide(BaseModel):
     id: int
     title: str
     layout_type: LayoutType = "bullets"
-    hero_statement: Optional[str] = None  # For hero/statement layouts: the "so what?" conclusion (replaces bullets)
+    hero_statement: Optional[str] = (
+        None  # For hero/statement layouts: the "so what?" conclusion (replaces bullets)
+    )
     bullets: list[str]
     speaker_notes: str
     image_brief: str
     backdrop_brief: str
     assets: SlideAssets = SlideAssets()
     transition_to_next: Optional[str] = None
+    # Veo prompt for the cinematic clip OUT of this slide to the next.
+    # Set by the ghost-deck-writer in PPTX mode (or hand-crafted for fresh decks).
+    # None = make-transitions constructs the prompt from its layout-pair formula.
+    transition_prompt: Optional[str] = None
     # ── Transition timing ────────────────────────────────────────────────────
     # Target duration (seconds) for the outgoing Veo clip AFTER ffmpeg retiming.
     # None = derive from video_processor.suggest_transition_duration(prev, this).
