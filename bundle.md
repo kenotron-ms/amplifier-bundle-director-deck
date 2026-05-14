@@ -1,19 +1,12 @@
 ---
-name: director-deck
-version: 0.1.0
-description: "Turn a text prompt into a polished PPTX with AI-generated images and Veo 3.1 video transitions"
-agents:
-  - agents/ghost-deck-writer.md
-  - agents/slide-architect.md
-  - agents/visual-director.md
-  - agents/transition-director.md
-  - agents/deck-stitcher.md
-recipes:
-  - recipes/director-deck.yaml
-  - recipes/director-deck-continue.yaml
-external_deps:
-  - amplifier-module-tool-gpt-image
-  - amplifier-module-tool-veo
+bundle:
+  name: director-deck
+  version: 0.1.0
+  description: "Turn a text prompt into a polished PPTX with AI-generated images and Veo 3.1 video transitions"
+
+includes:
+  - bundle: git+https://github.com/kenotron-ms/amplifier-module-tool-gpt-image@main
+  - bundle: git+https://github.com/kenotron-ms/amplifier-module-tool-veo@main
 ---
 
 # Director Deck
