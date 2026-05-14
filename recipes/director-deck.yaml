@@ -132,6 +132,12 @@ context:
                        #   skipping GPT Image generation — html_input takes precedence over pptx_input
   run_slug: ""         # Optional: slug override (derived from prompt/PPTX/HTML filename)
   run_dir: ""          # Computed by init-run-dir step (output: run_dir → stdout)
+  vlm_refine: ""       # Optional opt-in for Strategy 2 (html_input): after the overflow-based
+                       #   ladder search picks a viewport, ask a VLM whether the slide looks
+                       #   cramped/small; bump the viewport up one step if so. Caps at one
+                       #   bump per slide (single VLM call per slide). Set to "true"/"1"/"yes"
+                       #   to enable. Requires the openai package + OPENAI_API_KEY available
+                       #   at recipe runtime. Off by default (silent skip).
   _approval_message: ""  # Set automatically by approval gates; default empty
 
 # ---------------------------------------------------------------------------
@@ -308,6 +314,7 @@ stages:
 
           run_dir    = Path('{{run_dir}}')
           html_input = '{{html_input}}'.strip()
+          vlm_refine_enabled = '{{vlm_refine}}'.strip().lower() in ('true', '1', 'yes', 'on')
 
           if not html_input:
               print('No HTML input - skipping')
@@ -315,6 +322,52 @@ stages:
 
           from playwright.sync_api import sync_playwright
           from PIL import Image
+
+          # ── Optional VLM refinement for Strategy 2 ────────────────────────────
+          # When vlm_refine is enabled, after the overflow-based ladder search
+          # picks a viewport, we ask a vision model whether the slide still
+          # looks cramped or small at that size — and bump it up one ladder
+          # step if so. This catches the "fits but visually packed" case that
+          # a pure overflow probe misses (flex layouts can shrink content to
+          # fit without setting scrollHeight > clientHeight).
+          #
+          # Capped at one bump per slide (one VLM call per slide). Requires
+          # the openai package + OPENAI_API_KEY at recipe runtime.
+          def _vlm_cramped_check(png_bytes, slide_num):
+              """Ask OpenAI Vision if this slide is hard to read. Returns
+              'cramped', 'small', 'good', or '' on error/skip."""
+              try:
+                  import base64
+                  import openai
+                  client = openai.OpenAI()
+                  b64 = base64.b64encode(png_bytes).decode()
+                  resp = client.chat.completions.create(
+                      model='gpt-4o-mini',
+                      messages=[{
+                          'role': 'user',
+                          'content': [
+                              {'type': 'text', 'text':
+                                  'You are evaluating a single slide from a business '
+                                  'presentation rendered for projection. Is the text on '
+                                  'this slide hard to read at presentation distance '
+                                  'because (a) the font is too small relative to the '
+                                  'canvas, or (b) the layout is too cramped (elements '
+                                  'crowded together with insufficient whitespace)? '
+                                  'Reply with exactly one word: "cramped", "small", '
+                                  'or "good".'
+                              },
+                              {'type': 'image_url', 'image_url': {
+                                  'url': f'data:image/png;base64,{b64}',
+                              }},
+                          ],
+                      }],
+                      max_tokens=10,
+                      temperature=0.0,
+                  )
+                  return (resp.choices[0].message.content or '').strip().lower()
+              except Exception as exc:
+                  print(f'  VLM check failed for slide {slide_num}: {exc} — keeping current viewport')
+                  return ''
 
           # Resolve to absolute path (handle both file paths and URLs)
           if html_input.startswith('http://') or html_input.startswith('https://'):
@@ -436,6 +489,24 @@ stages:
                           if overflow_y is None or overflow_y <= 4:
                               chosen_w, chosen_h = cand_w, cand_h
                               break
+
+                      # ── Optional VLM refinement (single bump per slide max)
+                      # The overflow probe says "fits" when scrollHeight ≤ clientHeight,
+                      # but flex layouts can SHRINK content to fit (no overflow, but
+                      # visually cramped). The VLM catches this case. Only runs when
+                      # vlm_refine is enabled and we're not already at top of ladder.
+                      if vlm_refine_enabled:
+                          current_idx = NAV_LADDER.index((chosen_w, chosen_h))
+                          if current_idx < len(NAV_LADDER) - 1:
+                              preview = page.screenshot()
+                              verdict = _vlm_cramped_check(preview, slide_num)
+                              if verdict in ('cramped', 'small'):
+                                  current_idx += 1
+                                  chosen_w, chosen_h = NAV_LADDER[current_idx]
+                                  page.set_viewport_size({'width': chosen_w, 'height': chosen_h})
+                                  page.wait_for_timeout(250)
+                                  navigate_to(slide_num)
+                                  print(f'  VLM: slide {slide_num} rated "{verdict}" → bumped to {chosen_w}×{chosen_h}')
 
                       # ── Capture at chosen viewport (native pixels: chosen × 2 via DSF)
                       img_bytes = page.screenshot()
