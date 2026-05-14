@@ -1,0 +1,513 @@
+name: director-deck-continue
+version: "1.0.0"
+description: >
+  Continuation recipe for director-deck: visual generation → transitions → final assembly.
+  Stage 1 (content + wireframe) must already be complete. Provide run_dir pointing to
+  the existing run directory that contains slide_deck.json and DESIGN.md.
+
+context:
+  run_dir: ""            # Required: path to existing run dir, e.g. runs/2026-04-30-compounding-stack-faithful
+  _approval_message: ""  # Set automatically by approval gates
+
+stages:
+
+  # ── Stage 1: Visual Generation ─────────────────────────────────────────────
+  - name: visual-generation
+    steps:
+
+      - id: generate-slide-frames
+        type: agent
+        agent: self
+        timeout: 7200
+        prompt: |
+          You are the Slide Frame Director for Director Deck. Generate each
+          presentation slide as a SINGLE, COMPLETE image using the gpt_image tool.
+          Do NOT generate separate backdrop and content images and try to composite
+          them. Generate the entire slide — atmosphere, typography, layout, visual
+          elements — as one unified image that GPT Image composes holistically.
+
+          ## ⚠️ SIZE: 2560×1440 (2K 16:9) — NON-NEGOTIABLE
+          Every slide image MUST be generated at size "2560x1440".
+          This is the only 16:9 size in the enum that avoids any crop.
+          The prepare-keyframes step will resize to 1536×864 for Veo.
+
+          ## Context variables
+
+          run_dir        = {{run_dir}}
+          slides_to_redo = {{_approval_message}}
+          (empty on first run — generate ALL slides)
+
+          ## Step 1 — Read inputs
+
+          Read these files:
+          1. {{run_dir}}/slide_deck.json — all slide content
+          2. {{run_dir}}/DESIGN.md — extract ALL sections:
+             - YAML frontmatter (primary, accent, surface, on-surface hex values)
+             - ## Overview prose (inject verbatim into every prompt)
+             - ## Colors (role of each color)
+             - ## Do's and Don'ts (strict generation rules)
+             - ## Legibility & Accessibility (contrast rules, scrim requirements)
+
+          ## Step 2 — Determine which slides to process
+
+          If slides_to_redo is non-empty (e.g. "3,5"), process only those IDs.
+          If empty, process all slides.
+
+          ## Step 3 — Build prompt per slide
+
+          For each slide N, construct this prompt (fill in all placeholders):
+
+          ---
+          Render a complete professional presentation slide as a single image.
+          This is slide {N} of {total} in a business presentation deck.
+
+          SLIDE LAYOUT: {layout_type}
+          hero        = large centered statement over full-bleed atmospheric background
+          stat_callout= enormous number/stat centered, supporting label below it
+          statement   = large centered text only, section divider, no imagery
+          full_bleed  = full-screen imagery with minimal text overlay at bottom
+          bullets     = title at top + bullet list filling the slide
+          comparison  = two equal columns side-by-side with column headers
+          timeline    = title + horizontal/diagonal progression of dated events
+          process_flow= title + numbered sequential steps
+          quote       = large italic blockquote centered with attribution below
+
+          TEXT TO RENDER (reproduce this text EXACTLY, clearly legible):
+          {layout-specific content — map below}
+
+          VISUAL ATMOSPHERE:
+          {slide.image_brief}
+          Background mood: {slide.backdrop_brief}
+
+          DESIGN IDENTITY — apply this aesthetic faithfully:
+          {DESIGN.md ## Overview verbatim}
+
+          COLOR PALETTE:
+          Background: {primary hex} — {description from ## Colors}
+          Accent/headlines: {accent hex} — {description from ## Colors}
+          Body text: {on_surface hex} — {description from ## Colors}
+
+          DESIGN RULES (follow strictly — from DESIGN.md ## Do's and Don'ts):
+          {DESIGN.md ## Do's and Don'ts verbatim}
+
+          LEGIBILITY & ACCESSIBILITY (non-negotiable):
+          {DESIGN.md ## Legibility & Accessibility verbatim}
+          ADDITIONAL RULES:
+          - Every text element must be clearly readable at presentation distance
+          - Title/headline: large, bold, high contrast against its background
+          - Body text: meets minimum 4.5:1 contrast against immediate background
+          - If text overlaps imagery: render a dark gradient scrim behind the text
+          - No text may be partially obscured, blurred, or illegible
+
+          ⚠️ SAFE ZONE — NON-NEGOTIABLE — READ BEFORE PLACING ANY TEXT:
+          The slide will be center-cropped and displayed at various sizes.
+          Text outside the safe zone WILL be cut off and invisible to the audience.
+          ALL text (titles, headlines, stats, bullets, footnotes, labels) MUST
+          fall ENTIRELY within this rectangle on a 2560×1440 canvas:
+            X: 200px → 2360px  (leave 200px clear on left AND right)
+            Y: 216px → 1224px  (leave 216px clear on TOP AND BOTTOM)
+          Background imagery may bleed to full edges. Only TEXT has this constraint.
+          When in doubt, move text MORE toward the center. Closer is safer.
+
+          TECHNICAL:
+          - 2560×1440 pixels, 16:9 widescreen presentation format
+          - No watermarks, borders, slide numbers, or UI artifacts
+          - Professional finish, zero placeholder elements
+          ---
+
+          TEXT CONTENT MAPPING BY LAYOUT TYPE:
+          - hero: "HERO STATEMENT (large, centered, accent color): {hero_statement}"
+                  + if bullets[0]: "SUB-LINE (smaller, below statement): {bullets[0]}"
+          - statement: "LARGE CENTERED TEXT (accent or on-surface color): {hero_statement or title}"
+          - stat_callout: "LARGE STAT (enormous, centered, accent color): {hero_statement}"
+                          "SUPPORTING LABEL (body size, centered below): {bullets[0]}"
+          - quote: "QUOTE (large italic, centered): {hero_statement}"
+                   "ATTRIBUTION (small caps, below): — {bullets[0]}"
+          - full_bleed: "TEXT OVERLAY (bottom, over dark gradient): {hero_statement or title}"
+          - bullets: "SLIDE TITLE (top, accent color): {title}"
+                     "BULLET LIST (body text, dash prefix –):"
+                     {each bullet on its own line}
+          - comparison: "SLIDE TITLE: {title}"
+                        Split title at ' / ' for column headers
+                        "LEFT COLUMN HEADER: {left_header}"
+                        LEFT BULLETS: {bullets[:mid]}
+                        "RIGHT COLUMN HEADER: {right_header}"
+                        RIGHT BULLETS: {bullets[mid:]}
+          - timeline: "SLIDE TITLE: {title}"
+                      "TIMELINE ENTRIES (show as visual progression):"
+                      {each bullet as a node}
+          - process_flow: "SLIDE TITLE: {title}"
+                          "NUMBERED STEPS:"
+                          {each bullet}
+
+          ## Step 4 — Generate images
+
+          Ensure {{run_dir}}/pixel_slides/ directory exists (create it if not).
+
+          For each slide N to process, call gpt_image:
+            operation:   "generate"
+            model:       "gpt-image-2"
+            size:        "2560x1440"
+            output_path: "{{run_dir}}/pixel_slides/slide-{N}.png"
+          Do not skip any slide.
+
+          ## After completing
+
+          ✓ pixel_slides/slide-1.png
+          ✓ pixel_slides/slide-2.png
+          ...
+          ✓ pixel_slides/slide-{N}.png
+          All {N} slide frames generated as complete unified images.
+
+    approval:
+      required: true
+      prompt: |
+        Review the generated slide frames before transition generation begins.
+
+          Open directory: {{run_dir}}/pixel_slides/
+          Preview each slide-N.png as a complete, final slide image.
+
+        Request specific re-generations in the approval message, e.g.:
+          "redo slides 3,5 — text too small on 3, wrong colors on 5"
+        generate-slide-frames will regenerate only the named slides.
+
+        Approve when: all slides are legible, text is clearly readable,
+        visual identity is consistent, deck looks polished end-to-end.
+      timeout: 0
+      default: "deny"
+
+  # ── Stage 2: Transitions ────────────────────────────────────────────────────
+  - name: transitions
+    steps:
+
+      - id: prepare-keyframes
+        type: bash
+        timeout: 120
+        command: |
+          .venv/bin/python -c "
+          import json
+          from pathlib import Path
+          from PIL import Image, ImageFilter
+
+          run    = Path('{{run_dir}}')
+          kf_dir = run / 'keyframes'
+          kf_dir.mkdir(exist_ok=True)
+          slides = json.loads((run / 'slide_deck.json').read_text())['slides']
+
+          tw, th = 1536, 864
+          disp_dir = run / 'display_slides'
+          disp_dir.mkdir(exist_ok=True)
+
+          for slide in slides:
+              s_id = slide['id']
+              src = run / 'pixel_slides' / f'slide-{s_id}.png'
+              if not src.exists():
+                  print(f'  WARNING: {src.name} missing')
+                  continue
+              img = Image.open(src).convert('RGB')
+              sw, sh = img.size
+              # Center-crop to 16:9
+              if sw/sh > tw/th:
+                  new_w = int(sh * tw / th)
+                  img = img.crop(((sw-new_w)//2, 0, (sw+new_w)//2, sh))
+              else:
+                  new_h = int(sw * th / tw)
+                  img = img.crop((0, (sh-new_h)//2, sw, (sh+new_h)//2))
+              img = img.resize((tw, th), Image.LANCZOS)
+              img.save(disp_dir / src.name, 'PNG')
+              img.save(kf_dir / src.name, 'PNG')
+              print(f'  {src.name}: {sw}x{sh} → {tw}x{th}')
+          print('done')
+          "
+
+      - id: make-transitions
+        type: agent
+        agent: self
+        timeout: 7200
+        prompt: |
+          You are the Transition Director for Director Deck. Produce short video
+          clips that play between slides as cinematic transitions. Use your tools
+          to actually run the commands and generate the videos — do not just
+          describe what you would do.
+
+          ## ⚠️ SEAMLESS TRANSITION RULE — READ FIRST
+
+          All keyframe images AND Veo transition clips MUST be 16:9.
+          Keyframes are 1536×864. Veo aspect_ratio MUST be "16:9".
+          duration_seconds MUST be "8" (required minimum for interpolation).
+
+          ## Context variables
+
+          run_dir       = {{run_dir}}
+          pairs_to_redo = {{_approval_message}}
+          (pairs_to_redo is empty on the first run — generate ALL pairs)
+
+          ## Step 1 — Verify keyframes exist
+
+          Run this Python to confirm keyframes are present:
+
+          .venv/bin/python -c "
+          from pathlib import Path
+          import json
+          run = Path('{{run_dir}}')
+          slides = json.loads((run / 'slide_deck.json').read_text())['slides']
+          kf_dir = run / 'keyframes'
+          missing = [s['id'] for s in slides if not (kf_dir / f'slide-{s[\"id\"]}.png').exists()]
+          if missing:
+              print(f'MISSING keyframes: {missing}')
+          else:
+              print(f'All {len(slides)} keyframes present in {kf_dir}')
+          "
+
+          If any are missing, copy from pixel_slides/ (already 1536×864 after prepare-keyframes ran):
+
+          .venv/bin/python -c "
+          import shutil, json
+          from pathlib import Path
+          run = Path('{{run_dir}}')
+          slides = json.loads((run / 'slide_deck.json').read_text())['slides']
+          for s in slides:
+              src = run / 'pixel_slides' / f'slide-{s[\"id\"]}.png'
+              dst = run / 'keyframes' / f'slide-{s[\"id\"]}.png'
+              if not dst.exists() and src.exists():
+                  shutil.copy2(src, dst)
+                  print(f'Copied: {dst.name}')
+          "
+
+          ## Step 2 — Extract DESIGN.md Overview prose
+
+          Read {{run_dir}}/DESIGN.md. Extract the ## Overview section — the
+          2–3 sentence style description between ## Overview and the next ##.
+          Use the first 1–2 sentences as style context prefix for Veo prompts.
+
+          ## Step 3 — Determine which slide pairs to process
+
+          A deck with N slides has N-1 transition pairs: (1→2), (2→3), …, ((N-1)→N).
+
+          If pairs_to_redo is non-empty (e.g. "1-2,3-4"), parse into (from, to)
+          integer tuples and process only those pairs. Leave other MP4 files unchanged.
+
+          If pairs_to_redo is empty, process all pairs.
+
+          Create {{run_dir}}/transitions_raw/ before saving if it does not exist.
+
+          ## Step 4 — Generate transition clips
+
+          PROMPT RULE — never use "presentation", "slide", "deck", "infographic",
+          "PowerPoint", "chart", "data visualization" in Veo prompts. These trigger
+          Veo to generate slide-like content in intermediate frames. Describe as a
+          CINEMATIC SCENE.
+
+          PROMPT FORMULA — use EXACTLY this, fill in [SPEED], [CAMERA], [FOCUS]:
+
+            "[SPEED] cinematic animation. [CAMERA]. Focus on [FOCUS] — hold
+            the viewer's eye on it as it morphs and carries through into the
+            next scene. Do not invent, alter, or add any new statistics,
+            numbers, charts, or text that do not appear in the first or last
+            frame. Animate only what is already present in both frames."
+
+          [SPEED]:
+            "Slow"   — hero, statement, full_bleed, quote
+            "Medium" — stat_callout, bullets, timeline, comparison, process_flow
+
+          [CAMERA]:
+            "Camera holds still"  — hero, statement, stat_callout, quote
+            "Slow camera drift"   — full_bleed, bullets
+            "Slight pull back"    — comparison, timeline, process_flow
+
+          [FOCUS] — describe by position/shape only, never quote the text:
+            hero/statement → "the bright horizontal band at the center of the frame"
+            stat_callout   → "the large bright shape at the center of the frame"
+            full_bleed     → "the dominant light source in the scene"
+            bullets        → "the bright element at the top of the frame"
+            process_flow   → "the bright element at the top of the frame"
+            timeline       → "the glowing node at the right end of the line"
+            comparison     → "the bright vertical line at the center of the frame"
+            quote          → "the central text block"
+
+          Prepend the DESIGN.md Overview style context (1 sentence) to each prompt.
+
+          Then call the veo tool with:
+            operation:        image_to_video
+            model:            veo-3.1-generate-preview
+            image_path:       {{run_dir}}/keyframes/slide-{N}.png
+            last_frame_path:  {{run_dir}}/keyframes/slide-{N+1}.png
+            prompt:           <constructed from formula above>
+            duration_seconds: "8"
+            aspect_ratio:     "16:9"
+            output_path:      {{run_dir}}/transitions_raw/slide-{N}-to-{N+1}.mp4
+
+          Generate clips SEQUENTIALLY — do not attempt parallel Veo calls.
+
+          ## Step 5 — Update slide_deck.json
+
+          After generating all clips, update transition_to_next for each slide:
+            "transition_to_next": "transitions_raw/slide-{N}-to-{N+1}.mp4"
+          Final slide always has "transition_to_next": null.
+          Write the updated slide_deck.json back to {{run_dir}}/slide_deck.json.
+
+          ## After completing
+
+          ✓ keyframes: slide-1.png … slide-{N}.png
+          ✓ transitions_raw: slide-1-to-2.mp4 … slide-{N-1}-to-{N}.mp4 (raw Veo)
+          ✓ slide_deck.json updated with transitions_raw paths
+
+      - id: process-transitions
+        type: bash
+        timeout: 600
+        command: |
+          .venv/bin/python -c "
+          from pathlib import Path
+          from director_deck.schema import SlideDeck
+          from director_deck.video_processor import process_transition, suggest_transition_duration
+
+          run = Path('{{run_dir}}')
+          deck = SlideDeck.from_file(run / 'slide_deck.json')
+          slides = deck.slides
+          out_dir = run / 'transitions'
+          out_dir.mkdir(exist_ok=True)
+
+          for i, slide in enumerate(slides[:-1]):
+              next_slide = slides[i + 1]
+              raw = run / 'transitions_raw' / f'slide-{slide.id}-to-{next_slide.id}.mp4'
+              out = out_dir / f'slide-{slide.id}-to-{next_slide.id}.mp4'
+
+              if not raw.exists():
+                  print(f'  WARNING: {raw.name} not found, skipping')
+                  continue
+
+              target = slide.transition_duration_s or suggest_transition_duration(
+                  slide.layout_type, next_slide.layout_type
+              )
+              easing = slide.transition_easing or 'ease_in_out'
+
+              process_transition(raw, out, target_duration_s=target, easing=easing)
+              print(f'  {out.name}: {target}s {easing}  ({raw.stat().st_size//1024}KB raw → {out.stat().st_size//1024}KB)')
+
+          import json
+          data = json.loads((run / 'slide_deck.json').read_text())
+          for i, s in enumerate(data['slides'][:-1]):
+              s_id = s['id']
+              next_id = data['slides'][i + 1]['id']
+              s['transition_to_next'] = f'transitions/slide-{s_id}-to-{next_id}.mp4'
+          data['slides'][-1]['transition_to_next'] = None
+          (run / 'slide_deck.json').write_text(json.dumps(data, indent=2, ensure_ascii=False))
+          print('slide_deck.json updated — transition_to_next now points to transitions/')
+          "
+
+    approval:
+      required: true
+      prompt: |
+        Preview the processed transition clips (audio stripped, retimed).
+
+          Open directory: {{run_dir}}/transitions/          (processed, no audio)
+          Raw Veo clips:  {{run_dir}}/transitions_raw/      (original 8s clips)
+
+        Request specific clip re-generations in the approval message, e.g.:
+          "redo 2-3 — motion feels wrong. rest is good."
+        make-transitions will regenerate only those pairs.
+
+        Approve when: all transitions feel smooth and match the deck's aesthetic.
+      timeout: 0
+      default: "deny"
+
+  # ── Stage 3: Final Assembly ─────────────────────────────────────────────────
+  - name: final-assembly
+    steps:
+
+      - id: assemble-deck
+        type: bash
+        timeout: 300
+        command: |
+          .venv/bin/python -c "
+          from pathlib import Path
+          from pptx import Presentation
+          from pptx.util import Inches
+          from pptx.dml.color import RGBColor
+          from director_deck.schema import SlideDeck
+          from PIL import Image as _PIL
+
+          run = Path('{{run_dir}}')
+          deck = SlideDeck.from_file(run / 'slide_deck.json')
+          slides = deck.slides
+
+          W = Inches(13.33)
+          H = Inches(7.5)
+          prs = Presentation()
+          prs.slide_width  = W
+          prs.slide_height = H
+          BLANK = prs.slide_layouts[6]
+
+          def get_slide_img(slide):
+              for d in ['display_slides', 'pixel_slides']:
+                  p = run / d / f'slide-{slide.id}.png'
+                  if p.exists(): return p
+              return None
+
+          for i, slide in enumerate(slides):
+              img = get_slide_img(slide)
+              s = prs.slides.add_slide(BLANK)
+              s.background.fill.solid()
+              s.background.fill.fore_color.rgb = RGBColor(0, 0, 0)
+              if img:
+                  with _PIL.open(img) as _im: _iw, _ih = _im.size
+                  _r = _iw / _ih; _sw, _sh = 13.33, 7.5
+                  if _r > _sw / _sh:
+                      _pw = _sw; _ph = _pw / _r; _l = 0;    _t = (_sh - _ph) / 2
+                  else:
+                      _ph = _sh; _pw = _ph * _r; _t = 0;    _l = (_sw - _pw) / 2
+                  s.shapes.add_picture(str(img), Inches(_l), Inches(_t), Inches(_pw), Inches(_ph))
+              print(f'  Content slide {slide.id}')
+
+              if i < len(slides) - 1:
+                  mp4 = run / 'transitions' / f'slide-{slide.id}-to-{slides[i+1].id}.mp4'
+                  if mp4.exists():
+                      ts = prs.slides.add_slide(BLANK)
+                      ts.background.fill.solid()
+                      ts.background.fill.fore_color.rgb = RGBColor(0, 0, 0)
+                      ts.shapes.add_movie(str(mp4), 0, 0, W, H, mime_type='video/mp4')
+                      print(f'  Transition {slide.id}→{slides[i+1].id}  ({mp4.stat().st_size//1024}KB)')
+                  else:
+                      print(f'  WARNING: transition {slide.id}→{slides[i+1].id} not found — skipping')
+
+          out = run / 'final_deck.pptx'
+          prs.save(str(out))
+          total = len(prs.slides)
+          content_n = len(slides)
+          trans_n = total - content_n
+          print(f'Written: {out}  ({out.stat().st_size // (1024*1024):.1f}MB)')
+          print(f'Slides: {total} total ({content_n} content + {trans_n} transition videos)')
+
+          from director_deck.pptx_fixer import fix_video_slides
+          from director_deck.schema import SlideDeck as _SlideDeck
+          _deck2 = _SlideDeck.from_file(run / 'slide_deck.json')
+          _durations = [
+              s.transition_duration_s
+              for s in _deck2.slides[:-1]
+              if (run / f'transitions/slide-{s.id}-to-{_deck2.slides[_deck2.slides.index(s)+1].id}.mp4').exists()
+          ]
+          fixed = fix_video_slides(
+              out,
+              keyframe_dir      = run / 'display_slides',
+              slide_durations_s = _durations,
+          )
+          print(f'PPTX fixed: {fixed} video slides (poster frames replaced, auto-advance set)')
+
+          from director_deck.html_renderer import write_live_html
+          from director_deck.schema import DesignTokens
+          _tokens = DesignTokens.from_design_md(run / 'DESIGN.md')
+          write_live_html(deck, run, run / 'deck_live.html', tokens=_tokens)
+          print(f'HTML player written: {run}/deck_live.html')
+          "
+
+      - id: report
+        type: bash
+        command: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Director Deck — Complete"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          ls -lh "{{run_dir}}/final_deck.pptx" 2>/dev/null || echo "  final_deck.pptx not found"
+          ls -lh "{{run_dir}}/deck_live.html"  2>/dev/null || echo "  deck_live.html not found"
+          echo "  Run directory: {{run_dir}}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

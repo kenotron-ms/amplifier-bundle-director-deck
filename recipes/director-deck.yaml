@@ -2,6 +2,50 @@
 # CHANGELOG
 # =============================================================================
 #
+# v0.5.0 (2026-04-30):
+#   FLEXIBLE INPUT — three input modes; recipe adapts pipeline accordingly.
+#
+#   New context variables:
+#     pptx_input — path to a source .pptx; content extracted & re-rendered by GPT Image
+#     html_input — path/URL to an HTML presentation; slides screenshot AS-IS,
+#                  bypassing GPT Image generation entirely (html_input wins over pptx_input)
+#
+#   New step: analyze-input-deck
+#     Uses python-pptx to extract slide content, theme colors, fonts, speaker notes,
+#     and layout metadata into pptx_extract.json. No-op when pptx_input is empty.
+#
+#   New step: analyze-html-deck
+#     Opens the HTML in Playwright, auto-detects format (Director Deck #slide-N
+#     elements, keyboard-navigable Reveal.js/Impress.js, or viewport fallback),
+#     captures 1536×864 screenshots of every slide into pixel_slides/.
+#     No-op when html_input is empty.
+#
+#   Updated: init-run-dir
+#     Derives slug from html_input filename (priority), then pptx_input, then prompt.
+#
+#   Updated: write-content — THREE operating modes (priority order):
+#     1. HTML INPUT MODE:  Vision-analyzes pixel_slides/ screenshots → slide_deck.json
+#        + DESIGN.md. Layout type is free-form. transition_prompt pre-written from
+#        narrative analysis. Slide count from html_extract.json.
+#     2. PPTX INPUT MODE: Reads pptx_extract.json → slide_deck.json + DESIGN.md.
+#        Verbatim content. Free-form layout_type. transition_prompt pre-written.
+#        Slide count locked to source deck.
+#     3. TEXT PROMPT MODE: Ghost-deck-writer from scratch. 9 preset layout types.
+#        Slide count from audience guidelines.
+#
+#   Updated: generate-slide-frames
+#     Step 2: skip-if-exists — skips slides whose pixel_slides/slide-N.png already
+#     exists (set by HTML capture). Respects slides_to_redo for forced re-generation.
+#     Layout type handling: free-form types use image_brief; presets use layout table.
+#
+#   Updated: make-transitions
+#     Uses slide.transition_prompt from slide_deck.json when set (written by write-content
+#     in HTML/PPTX modes). Falls back to layout-pair formula for null prompts.
+#
+#   Schema changes (schema.py):
+#     - LayoutType: Literal[9 types] → str (free-form, presets in PRESET_LAYOUT_TYPES)
+#     - Slide.transition_prompt: new Optional[str] field for pre-written Veo prompts
+#
 # v0.2.0 (2026-04-22):
 #   - BREAKING CHANGE: Replace unresolvable local-agent references with working
 #     foundation:zen-architect steps + direct bash steps
@@ -52,11 +96,13 @@
 #     * RESULT: run_dir propagates correctly through all four stages.
 
 name: director-deck
-version: "0.4.0"
+version: "0.5.0"
 description: >
-  Turn a text prompt into a polished PPTX with AI-generated images and
-  Veo 3.1 video transitions. Three human review gates ensure aesthetic
-  quality at content, visual, and transition checkpoints.
+  Turn a text prompt OR an existing PPTX into a polished AI-animated deck with
+  GPT Image slides and Veo 3.1 video transitions. When a PPTX is supplied the
+  source deck's layout, content, and narrative drive everything — slide count is
+  preserved verbatim. Three human review gates ensure quality at content,
+  visual, and transition checkpoints.
 
 # ---------------------------------------------------------------------------
 # Requirements
@@ -80,8 +126,11 @@ description: >
 # Context — provided at recipe invocation
 # ---------------------------------------------------------------------------
 context:
-  prompt: ""           # Required: deck topic; must be provided at invocation
-  run_slug: ""         # Optional: slug override (derived from prompt if empty)
+  prompt: ""           # Required if no pptx_input/html_input; deck topic for fresh generation
+  pptx_input: ""       # Optional: path to source .pptx file; content extracted, then re-rendered
+  html_input: ""       # Optional: path/URL to HTML presentation; slides screenshot as-is,
+                       #   skipping GPT Image generation — html_input takes precedence over pptx_input
+  run_slug: ""         # Optional: slug override (derived from prompt/PPTX/HTML filename)
   run_dir: ""          # Computed by init-run-dir step (output: run_dir → stdout)
   _approval_message: ""  # Set automatically by approval gates; default empty
 
@@ -102,8 +151,19 @@ stages:
           DATE=$(date +%Y-%m-%d)
           SLUG="{{run_slug}}"
           if [ -z "$SLUG" ]; then
-            SLUG=$(echo "{{prompt}}" | tr '[:upper:]' '[:lower:]' \
-                   | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | cut -c1-40 | sed 's/-$//')
+            HTML="{{html_input}}"
+            PPTX="{{pptx_input}}"
+            if [ -n "$HTML" ]; then
+              # html_input takes precedence — derive slug from HTML filename
+              SLUG=$(basename "$HTML" .html | tr '[:upper:]' '[:lower:]' \
+                     | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | cut -c1-40 | sed 's/-$//')
+            elif [ -n "$PPTX" ]; then
+              SLUG=$(basename "$PPTX" .pptx | tr '[:upper:]' '[:lower:]' \
+                     | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | cut -c1-40 | sed 's/-$//')
+            else
+              SLUG=$(echo "{{prompt}}" | tr '[:upper:]' '[:lower:]' \
+                     | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | cut -c1-40 | sed 's/-$//')
+            fi
           fi
           RUN_DIR="runs/${DATE}-${SLUG}"
           mkdir -p "${RUN_DIR}/assets" "${RUN_DIR}/keyframes" "${RUN_DIR}/transitions"
@@ -111,30 +171,619 @@ stages:
           printf "%s" "${RUN_DIR}"
         output: run_dir   # stdout → {{run_dir}} available in all subsequent steps
 
+      - id: analyze-input-deck
+        # Extracts structured data from a source PPTX file when pptx_input is set.
+        # No-op when pptx_input is empty (text-prompt mode).
+        # Writes pptx_extract.json to run_dir for write-content to consume.
+        # Requires: python-pptx (already a dependency via pptx_builder.py)
+        type: bash
+        timeout: 60
+        command: |
+          .venv/bin/python -c "
+          import json, sys
+          from pathlib import Path
+
+          run_dir = Path('{{run_dir}}')
+          pptx_input = '{{pptx_input}}'.strip()
+
+          if not pptx_input:
+              print('No PPTX input - running in text-prompt mode')
+              sys.exit(0)
+
+          from pptx import Presentation
+
+          prs = Presentation(pptx_input)
+
+          # Extract theme colors from the slide master via DrawingML XML
+          theme_colors = {}
+          try:
+              ns = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+              for master in prs.slide_masters:
+                  clr = master.element.find(f'.//{ns}clrScheme')
+                  if clr is not None:
+                      for child in clr:
+                          tag = child.tag.split('}')[-1]
+                          srgb = child.find(f'{ns}srgbClr')
+                          if srgb is not None:
+                              theme_colors[tag] = '#' + srgb.get('val', '')
+                      break
+          except Exception as ex:
+              theme_colors['error'] = str(ex)
+
+          slides_data = []
+          for i, slide in enumerate(prs.slides):
+              s = {
+                  'id': i + 1,
+                  'layout_name': slide.slide_layout.name if slide.slide_layout else 'unknown',
+                  'placeholders': [],
+                  'extra_shapes': [],
+                  'background_hex': None,
+                  'notes': '',
+              }
+              # Structured placeholders: idx=0 = title, idx=1 = body/content
+              for ph in slide.placeholders:
+                  if ph.has_text_frame:
+                      lines = [p.text for p in ph.text_frame.paragraphs if p.text.strip()]
+                      s['placeholders'].append({
+                          'idx': ph.placeholder_format.idx,
+                          'type': str(ph.placeholder_format.type),
+                          'name': ph.name,
+                          'text': ph.text_frame.text.strip(),
+                          'lines': lines,
+                      })
+              # Non-placeholder shapes with text (callouts, text boxes, etc.)
+              for shape in slide.shapes:
+                  if shape.is_placeholder:
+                      continue
+                  if shape.has_text_frame:
+                      t = shape.text_frame.text.strip()
+                      if t:
+                          s['extra_shapes'].append({'name': shape.name, 'text': t})
+              # Background solid fill color
+              try:
+                  bg_fill = slide.background.fill
+                  if hasattr(bg_fill, 'fore_color'):
+                      s['background_hex'] = '#' + str(bg_fill.fore_color.rgb)
+              except:
+                  pass
+              # Speaker notes
+              try:
+                  if slide.has_notes_slide:
+                      s['notes'] = slide.notes_slide.notes_text_frame.text.strip()
+              except:
+                  pass
+              slides_data.append(s)
+
+          # Fonts from slide master layouts
+          fonts = []
+          try:
+              for master in prs.slide_masters:
+                  for layout in master.slide_layouts:
+                      for shape in layout.shapes:
+                          if shape.has_text_frame:
+                              for para in shape.text_frame.paragraphs:
+                                  for run in para.runs:
+                                      if run.font.name and run.font.name not in fonts:
+                                          fonts.append(run.font.name)
+          except:
+              pass
+
+          output = {
+              'source': pptx_input,
+              'slide_count': len(prs.slides),
+              'theme_colors': theme_colors,
+              'fonts': fonts,
+              'slides': slides_data,
+          }
+          out = run_dir / 'pptx_extract.json'
+          out.write_text(json.dumps(output, indent=2, ensure_ascii=False))
+          print(f'Extracted {len(slides_data)} slides from {pptx_input}')
+          print(f'Written to {out}')
+          "
+
+      - id: analyze-html-deck
+        # Captures each slide from an HTML presentation as a PNG using Playwright.
+        # html_input TAKES PRECEDENCE over pptx_input — when html_input is set, the
+        # captured screenshots become pixel_slides/ directly, bypassing GPT Image
+        # generation entirely. The write-content agent then analyzes the screenshots
+        # with vision to write slide_deck.json + DESIGN.md.
+        #
+        # Supports three HTML deck formats (auto-detected):
+        #   1. Director Deck HTML (deck_wireframe.html / deck_live.html):
+        #      Finds #slide-N elements and screenshots each one at 1536×864.
+        #   2. Reveal.js / Impress.js / deck.js (or any keyboard-navigable deck):
+        #      Navigates with ArrowRight, screenshots viewport, stops when it loops.
+        #   3. Fallback: full-page viewport screenshot (single frame).
+        #
+        # Saves slide-1.png … slide-N.png to {{run_dir}}/pixel_slides/.
+        # Writes {{run_dir}}/html_extract.json with slide count + metadata.
+        # No-op when html_input is empty.
+        type: bash
+        timeout: 120
+        command: |
+          .venv/bin/python -c "
+          import json, sys, hashlib
+          from pathlib import Path
+
+          run_dir    = Path('{{run_dir}}')
+          html_input = '{{html_input}}'.strip()
+
+          if not html_input:
+              print('No HTML input - skipping')
+              sys.exit(0)
+
+          from playwright.sync_api import sync_playwright
+
+          # Resolve to absolute path (handle both file paths and URLs)
+          if html_input.startswith('http://') or html_input.startswith('https://'):
+              url = html_input
+          else:
+              p = Path(html_input).resolve()
+              if not p.exists():
+                  print(f'ERROR: {p} not found')
+                  sys.exit(1)
+              url = f'file://{p}'
+
+          px_dir = run_dir / 'pixel_slides'
+          px_dir.mkdir(parents=True, exist_ok=True)
+
+          W, H = 1536, 864
+          captured = 0
+
+          with sync_playwright() as pw:
+              browser = pw.chromium.launch()
+              page    = browser.new_page()
+              page.set_viewport_size({'width': W, 'height': H})
+              page.goto(url, wait_until='networkidle')
+              page.wait_for_timeout(2000)
+
+              # ── Strategy 1: Director Deck element IDs (#slide-1, #slide-2, …)
+              n = 1
+              while True:
+                  elem = page.query_selector(f'#slide-{n}')
+                  if not elem:
+                      break
+                  # Scroll element into view and screenshot just that bounding box
+                  elem.scroll_into_view_if_needed()
+                  page.wait_for_timeout(300)
+                  bb = elem.bounding_box()
+                  if bb:
+                      img_bytes = page.screenshot(clip={'x': bb['x'], 'y': bb['y'],
+                                                        'width': bb['width'], 'height': bb['height']})
+                  else:
+                      img_bytes = page.screenshot()
+                  out = px_dir / f'slide-{n}.png'
+                  out.write_bytes(img_bytes)
+                  print(f'  slide-{n}.png (element #slide-{n})')
+                  captured = n
+                  n += 1
+
+              # ── Strategy 2: Keyboard-navigable deck (Reveal.js, Impress.js, etc.)
+              if captured == 0:
+                  seen_hashes = []
+                  slide_num   = 1
+                  # Reset to start
+                  page.keyboard.press('Home')
+                  page.wait_for_timeout(600)
+
+                  while slide_num <= 100:
+                      img_bytes = page.screenshot()
+                      h = hashlib.md5(img_bytes).hexdigest()
+
+                      # Stop if we've looped back to a previously-seen frame
+                      if h in seen_hashes and slide_num > 2:
+                          print(f'  Detected loop at slide {slide_num} — stopping')
+                          break
+
+                      out = px_dir / f'slide-{slide_num}.png'
+                      out.write_bytes(img_bytes)
+                      seen_hashes.append(h)
+                      print(f'  slide-{slide_num}.png (keyboard nav)')
+                      captured = slide_num
+
+                      # Advance to next slide
+                      page.keyboard.press('ArrowRight')
+                      page.wait_for_timeout(700)
+
+                      # Check if page changed
+                      next_bytes = page.screenshot()
+                      next_h     = hashlib.md5(next_bytes).hexdigest()
+                      if next_h == h:
+                          print(f'  No change after ArrowRight — end of deck')
+                          break
+
+                      slide_num += 1
+
+              browser.close()
+
+          # ── DOM text extraction (avoids needing vision in write-content)
+          dom_slides = []
+          css_vars   = {}
+
+          if not html_input.startswith('http://') and not html_input.startswith('https://'):
+              try:
+                  import re as _re
+                  src = Path(html_input).read_text(encoding='utf-8')
+
+                  # CSS design tokens (colors, fonts)
+                  for m in _re.finditer(r'--([\w-]+)\s*:\s*([^;]+);', src):
+                      css_vars[m.group(1)] = m.group(2).strip()
+
+                  # Pattern 1: data-slide=N  (e.g. <section data-slide="3">)
+                  # Use .(\d+). to match any quote char without inline quote escaping
+                  pat = _re.compile(
+                      r'data-slide=.(\d+).[^>]*>(.*?)</section',
+                      _re.DOTALL | _re.IGNORECASE)
+                  for num, body in pat.findall(src):
+                      text = _re.sub(r'<[^>]+>', ' ', body)
+                      text = _re.sub(r'\s+', ' ', text).strip()
+                      if text:
+                          dom_slides.append({'id': int(num), 'text': text})
+
+                  # Pattern 2: id=slide-N  (Director Deck wireframe format)
+                  if not dom_slides:
+                      pat2 = _re.compile(
+                          r'id=.slide-(\d+).[^>]*>(.*?)</(?:section|div)',
+                          _re.DOTALL | _re.IGNORECASE)
+                      for num, body in pat2.findall(src):
+                          text = _re.sub(r'<[^>]+>', ' ', body)
+                          text = _re.sub(r'\s+', ' ', text).strip()
+                          if text:
+                              dom_slides.append({'id': int(num), 'text': text})
+
+                  dom_slides.sort(key=lambda s: s['id'])
+                  print(f'DOM extraction: {len(dom_slides)} slides, {len(css_vars)} CSS vars')
+              except Exception as ex:
+                  print(f'DOM extraction failed: {ex}')
+
+          meta = {
+              'source':       html_input,
+              'url':          url,
+              'slide_count':  captured,
+              'dom_extraction': 'success' if dom_slides else 'not_available',
+              'css_vars':     css_vars,
+              'slides_text':  dom_slides,
+          }
+          out_json = run_dir / 'html_extract.json'
+          out_json.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+          print(f'Captured {captured} slides -> {px_dir}')
+          print(f'Metadata + DOM text -> {out_json}')
+          "
+
       - id: write-content
         # Replaces local agent: ghost-deck-writer
-        # Inlines the full ghost-deck-writer system prompt and instructions.
+        # Three operating modes selected by input context variables:
+        #   HTML INPUT MODE  (html_input set):     vision-analyzes screenshots → slide_deck.json
+        #   PPTX INPUT MODE  (pptx_input set):     reads pptx_extract.json → slide_deck.json
+        #   TEXT PROMPT MODE (both empty):         ghost-deck-writer from scratch
         # Tools needed: read_file, write_file (standard foundation tools).
         type: agent
         agent: self
-        timeout: 600
+        timeout: 1800
         prompt: |
-          You are the Ghost Deck Writer for Director Deck. From a user prompt you
-          produce two files that drive the entire pipeline. Use your file-writing
-          tools to create them — do NOT just output the content as text.
+          You are the Ghost Deck Writer for Director Deck. You produce two files that
+          drive the entire pipeline: {{run_dir}}/slide_deck.json and {{run_dir}}/DESIGN.md.
+          Use your file-writing tools to create them — do NOT just output content as text.
 
           ## Context variables
 
           run_dir               = {{run_dir}}
           prompt                = {{prompt}}
+          pptx_input            = {{pptx_input}}
+          html_input            = {{html_input}}
           revision_instructions = {{_approval_message}}
           (revision_instructions is empty on the first run)
 
           ---
 
-          ## STEP 1 — GHOST DECK (do this before writing any content)
+          ## MODE SELECTION
 
-          Write all slide titles first as an internal outline. Read just the titles.
+          Check in priority order:
+            1. IF html_input is non-empty  → HTML INPUT MODE (screenshots already in pixel_slides/)
+            2. ELIF pptx_input is non-empty → PPTX INPUT MODE (pptx_extract.json available)
+            3. ELSE                         → TEXT PROMPT MODE (generate from scratch)
+
+          All modes share the DESIGN.md FORMAT, revision handling, and output
+          confirmation sections at the end of this prompt.
+
+          ---
+          ---
+
+          ## HTML INPUT MODE (when html_input is set)
+
+          The pixel_slides/ directory already contains 1536×864 screenshots of every
+          slide, captured from the source HTML presentation by analyze-html-deck.
+          These ARE the final slide images — GPT Image generation will be SKIPPED.
+
+          Your job: analyze the screenshots with vision, understand the deck's
+          narrative arc, then write slide_deck.json + DESIGN.md so the transitions
+          pipeline knows what to do.
+
+          ### Step H1 — Read source content (text-first, vision as fallback)
+
+          Read {{run_dir}}/html_extract.json.
+
+          CHECK the `dom_extraction` field:
+
+          ── PATH A (preferred): dom_extraction = "success" ──────────────────
+          The HTML source was parsed directly. Use `slides_text` array — each
+          entry has `id` and `text` (full plain-text content of that slide).
+          Use `css_vars` for design token inference (bg, ink, accent, serif, sans).
+          This path is fast and precise — no vision needed.
+
+          Also check `slide_count` for the authoritative count.
+
+          ── PATH B (fallback): dom_extraction = "not_available" ──────────────
+          The deck was a live URL or dynamic JS with no parseable HTML source.
+          For each slide N = 1 … slide_count, read the screenshot:
+            {{run_dir}}/pixel_slides/slide-N.png
+          and extract via vision:
+            - Title and body text
+            - Layout structure
+            - Color palette and atmosphere
+
+          In either path, for each slide also note:
+            - The dominant statement (hero_statement candidate)
+            - Layout structure clues (section headers, body bullets, callout numbers,
+              two-column layout, full-bleed image, etc.)
+
+          ### Step H2 — Understand the narrative arc
+
+          After reading all slides, identify:
+          1. The deck's central claim or purpose
+          2. The storytelling structure being used
+          3. The emotional peaks and pivot points
+          4. The narrative relationship between each adjacent pair of slides
+             (logical continuation? emotional pivot? evidence? resolution? close?)
+
+          This analysis drives transition_prompt and transition_duration_s.
+
+          ### Step H3 — Write {{run_dir}}/slide_deck.json
+
+          SLIDE COUNT is locked to html_extract.json slide_count.
+
+          For each slide, fill every field. Key rules:
+
+          "title": Verbatim title text extracted from the screenshot.
+            If no clear title is visible, use the most prominent text element.
+
+          "layout_type": Free-form string describing what you SEE in the screenshot.
+            Be descriptive — it is stored as metadata and aids future editing.
+            Examples: "title_only", "title_and_body", "title_and_bullets",
+            "big_number_with_label", "full_bleed_photo", "two_column_text",
+            "agenda_list", "section_divider_text_only", "chart_with_title",
+            "photo_mosaic", "quote_with_attribution" …
+
+          "hero_statement": The single dominant text statement on the slide.
+            Verbatim. Null if the slide is a complex grid/table with no single
+            dominant statement.
+
+          "bullets": List of body text lines, verbatim as they appear.
+            Preserve each bullet/list item as a separate string. [] if none.
+
+          "speaker_notes": Write 2–3 sentences in the presenter's voice explaining
+            what this slide says and why it matters in the deck's arc.
+
+          "image_brief": Describe the visual composition of the screenshot faithfully.
+            Even though GPT Image won't regenerate this slide, this field documents
+            the original slide's visual design for any future manual editing.
+            Include: layout structure, color palette, any imagery or charts visible,
+            exact text placement.
+
+          "backdrop_brief": Background mood/texture only (no text, no faces).
+            Describe what you see: solid color hex, gradient direction, texture.
+
+          "transition_prompt": Pre-written Veo cinematic scene description for the
+            motion/scene connecting this slide to the next.
+
+            USE THE FORMULA exactly:
+              "[SPEED] cinematic animation. [CAMERA]. Focus on [FOCUS] — hold
+              the viewer's eye on it as it morphs and carries through into the
+              next scene. Do not invent, alter, or add any new statistics,
+              numbers, charts, or text that do not appear in the first or last
+              frame. Animate only what is already present in both frames."
+
+            [SPEED]:  "Slow" — emotional/contemplative, big visual change
+                      "Medium" — logical/informational, similar density slides
+            [CAMERA]: "Camera holds still" — text-dominant, formal
+                      "Slow camera drift" — imagery-dominant
+                      "Slight pull back" — before a reveal or shift in perspective
+            [FOCUS]:  Dominant visual element described by POSITION/SHAPE only.
+                      NEVER quote text. E.g.: "the bright horizontal band at the
+                      center of the frame", "the large luminous shape at the
+                      upper third of the composition"
+
+            BANNED words: "presentation", "slide", "deck", "infographic",
+            "PowerPoint", "chart", "data visualization"
+
+            Set to null on the LAST slide.
+
+          "transition_duration_s": From your narrative arc analysis — how long
+            should the audience linger on the transition OUT of this slide?
+            - Business/data: 2.0–3.5s default
+            - Contemplative/cultural: 4.0–6.0s default
+            - +1.5–2.0s for heavy emotional departures
+            - +1.5–2.0s when approaching a peak moment
+            Set explicitly on every slide. Null on the last slide.
+
+          "assets": { "image": null, "backdrop": null }
+          "transition_to_next": null
+
+          ### Step H4 — Write {{run_dir}}/DESIGN.md
+
+          If dom_extraction = "success": use css_vars from html_extract.json directly.
+          Map CSS variable names to design token roles:
+            --bg, --bg-alt         → primary (background)
+            --accent, --accent-2   → accent
+            --panel, --surface     → surface
+            --ink, --on-surface    → on-surface
+            --serif, --sans        → typography font families
+
+          Otherwise, infer from screenshots:
+          - Dominant background color → primary
+          - Accent/highlight color → accent
+          - Text color on dark backgrounds → on-surface
+          - Panel/card color if any → surface
+          - Fonts as best you can read them
+          - ## Overview: 2–3 sentences describing the visual world of this deck,
+            specific enough to constrain Veo — e.g. "Deep charcoal backgrounds with
+            sharp amber rule lines and condensed sans-serif typography — the deck
+            has the aesthetic of a financial terminal, precise and high-contrast."
+
+          Follow the DESIGN.md FORMAT section below for exact structure.
+
+          ---
+          ---
+
+          ## PPTX INPUT MODE
+
+          You are working from an existing slide deck. Your job is to faithfully
+          TRANSLATE it — not invent new content. You are the curator, not the author.
+
+          ### Step P1 — Read the extracted deck data
+
+          Read {{run_dir}}/pptx_extract.json. Study:
+          - slide_count: you MUST produce exactly this many slides — no more, no fewer
+          - slides[*].placeholders: idx=0 is the title, idx=1 is the body/content
+          - slides[*].extra_shapes: text boxes, callouts, etc. outside placeholders
+          - slides[*].notes: existing speaker notes
+          - slides[*].layout_name: the source slide's layout type from PowerPoint
+          - slides[*].background_hex: background color if extractable
+          - theme_colors: raw DrawingML color scheme (dk1, lt1, accent1…6 etc.)
+          - fonts: detected font names from the master
+
+          ### Step P2 — Understand the narrative arc
+
+          Read ALL the slide content together. Identify:
+          1. The deck's central claim
+          2. The storytelling structure (answer-first, tension-resolution, etc.)
+          3. The emotional arc: where are the peak moments?
+          4. The narrative relationship between adjacent slides (logical step,
+             emotional pivot, evidence, close)
+
+          Write your narrative analysis as an internal outline. Do not save it.
+
+          ### Step P3 — Write {{run_dir}}/slide_deck.json
+
+          SLIDE COUNT is locked to pptx_extract.json slide_count.
+          Do NOT add, remove, or merge slides.
+
+          For each slide, fill in every field:
+
+          "id": 1..N sequential
+
+          "title": Use the VERBATIM title text from placeholders[idx=0].
+            Do NOT rewrite, shorten, or improve. Exact text only.
+            If the source slide has no title placeholder, use the most prominent
+            text element.
+
+          "layout_type": A free-form string describing the actual layout.
+            You are NOT restricted to the 9 preset types. Use any string that
+            accurately describes the layout — it feeds into the GPT Image rendering
+            prompt as a layout guide. Examples:
+              "title_only", "title_and_body", "title_and_two_columns",
+              "big_number_with_label", "photo_full_bleed_with_caption",
+              "section_divider", "agenda_list", "title_and_chart_placeholder",
+              "four_quadrants", "comparison_table", "photo_mosaic" …
+            For slides that DO match a preset, you MAY use the preset name.
+
+          "hero_statement": The single most important text element on the slide.
+            Verbatim. Use the title or the dominant callout, whichever carries
+            the slide's main point. Leave null only if the slide is purely
+            a grid/table with no single dominant statement.
+
+          "bullets": List of body text lines, verbatim. Preserve each item as a
+            separate string. If the slide has no body bullets, use [].
+
+          "speaker_notes": Use the existing notes verbatim if present. Otherwise
+            write 2–3 sentences in the presenter's voice explaining what this
+            slide says and why it matters.
+
+          "image_brief": CRITICAL for rendering fidelity. Describe how to render
+            this slide as a high-quality image faithful to the original. Include:
+            - Overall layout composition (title zone, content zone, image zone)
+            - Visual atmosphere from the original (background color, imagery,
+              texture, dark/light, formal/expressive)
+            - ALL text that must appear on this slide and its approximate position
+            - Any charts, diagrams, icons, photos, or shapes present
+            - Color palette as seen on the original slide
+            This is the instruction GPT Image will follow to reproduce the slide.
+            Be specific and complete. Do NOT omit text that must appear.
+
+          "backdrop_brief": Background mood/texture description only.
+            No text, no faces, no logos. Infer from background_hex and the
+            deck's overall aesthetic. E.g. "deep navy solid background with
+            subtle grain texture" or "warm off-white linen texture, soft vignette."
+
+          "transition_prompt": A pre-written Veo cinematic scene description for
+            the transition clip OUT of this slide to the next.
+
+            This is the most important new field in PPTX mode — pre-writing it
+            now locks in intentional cinematography based on your narrative analysis.
+
+            USE EXACTLY THIS FORMULA:
+              "[SPEED] cinematic animation. [CAMERA]. Focus on [FOCUS] — hold
+              the viewer's eye on it as it morphs and carries through into the
+              next scene. Do not invent, alter, or add any new statistics,
+              numbers, charts, or text that do not appear in the first or last
+              frame. Animate only what is already present in both frames."
+
+            Fill [SPEED], [CAMERA], [FOCUS] from your narrative analysis:
+              [SPEED]:  "Slow" — heavy emotional moment, contemplative deck
+                        "Medium" — logical step, business deck
+              [CAMERA]: "Camera holds still" — statement, hero, stat
+                        "Slow camera drift" — full bleed, imagery-dominant
+                        "Slight pull back" — comparison, data, logical pivot
+              [FOCUS]:  Describe the visual anchor by POSITION/SHAPE ONLY.
+                        NEVER quote text or numbers.
+                        E.g. "the bright horizontal band at the center of the frame"
+                        or "the large luminous shape centered in the composition"
+
+            NEVER use the words: "presentation", "slide", "deck", "infographic",
+            "PowerPoint", "chart", "data visualization" — they cause Veo to
+            invent slide-like content in the intermediate frames.
+
+            Set to null on the LAST slide.
+
+          "transition_duration_s": Set based on the narrative weight of leaving
+            THIS slide and entering the NEXT:
+            - Business/pitch default: 2.0–3.5s
+            - Contemplative/cultural default: 4.0–6.0s
+            - +1.5–2.0s for emotionally heavy departures (pivots, data reveals)
+            - +1.5–2.0s when approaching a peak moment (hero close, big reveal)
+            - −0.5–1.0s for quick logical steps (bullets→bullets, step→step)
+            Set explicitly on every slide. Set to null on the LAST slide.
+
+          "transition_easing": "ease_in_out" (default), or "linear", "ease_in",
+            "ease_out". Rarely changed — leave "ease_in_out" unless you have
+            a specific reason.
+
+          "assets": { "image": null, "backdrop": null }
+          "transition_to_next": null
+
+          ### Step P4 — Write {{run_dir}}/DESIGN.md
+
+          Infer the visual identity from the source deck:
+
+          - theme_colors → map to primary, accent, surface, on-surface.
+            Priority: dk1/dk2 → dark surfaces; lt1/lt2 → light surfaces;
+            accent1 → accent. If colors are missing, infer from content/topic.
+          - fonts → use for h1 and body-md typography
+          - The deck's subject matter and emotional register inform the ## Overview
+
+          Follow the DESIGN.md FORMAT section below for exact structure.
+
+          ---
+          ---
+
+          ## TEXT PROMPT MODE
+
+          You are generating a brand-new deck from a text prompt. You are the
+          author — invent, structure, and craft everything.
+
+          ### Step T1 — Ghost Deck (write titles first)
+
+          Write all slide titles as an internal outline. Read just the titles.
           This is the **Newspaper Test** — if someone reading only the titles gets
           the full argument, you have a coherent deck. If not, restructure before
           writing a single bullet.
@@ -155,9 +804,7 @@ stages:
           | Competitive Landscape | Three competitors are converging on our core market |
           | Next Steps | Two decisions this week determine whether we ship in Q2 or Q3 |
 
-          ---
-
-          ## STEP 2 — CHOOSE STORYTELLING FRAMEWORK
+          ### Step T2 — Choose Storytelling Framework
 
           Pick one framework before writing any content. Apply it consistently:
 
@@ -178,9 +825,7 @@ stages:
           - **Retrospective** — What happened, what worked, what didn't, what
             changes. Use when: the purpose is learning, not persuasion.
 
-          ---
-
-          ## STEP 3 — OUTCOMES OVER ACTIVITY
+          ### Step T3 — Outcomes Over Activity
 
           Hard rule: never lead with activity metrics. Audiences care what changed,
           not how busy the work was.
@@ -191,9 +836,7 @@ stages:
           | Wrote 3,200 lines of code | Replaced the legacy parser; import time 8s → 0.4s |
           | 94% test coverage | Zero regressions in 6 weeks of production traffic |
 
-          ---
-
-          ## STEP 4 — THE SO WHAT TEST
+          ### Step T4 — The So What Test
 
           For every slide: who cares, and why? The title must answer "so what?"
           without the audience having to do the work.
@@ -206,29 +849,22 @@ stages:
           - Comparisons: label the winner and say why it matters
           - Bullets: each bullet is a claim, not a category
 
-          If you cannot articulate the so-what for a slide, the slide should not
-          exist.
+          If you cannot articulate the so-what for a slide, the slide should not exist.
 
-          ---
-
-          ## STEP 5 — EMOTIONAL ARC
+          ### Step T5 — Emotional Arc
 
           Design 2–3 peak moment slides first, then build the rest around them:
 
-          - **The gap slide** — the problem felt viscerally; audience feels cost of
-            inaction
+          - **The gap slide** — the problem felt viscerally; audience feels cost of inaction
           - **The reveal slide** — the solution clicks; the "aha" moment
-          - **The proof slide** — skeptics nod; evidence that overcomes the default
-            objection
+          - **The proof slide** — skeptics nod; evidence that overcomes the default objection
           - **The close slide** — thesis restated as a specific call to action.
             Not "Thank You." Not "Questions?" A specific ask.
 
           Ask yourself: "Which 2 slides will the audience remember tomorrow?"
           If you can't answer that, restructure.
 
-          ---
-
-          ## STEP 5b — TRANSITION PACING
+          ### Step T5b — Transition Pacing
 
           **This is an editorial decision, not a technical one.** You are setting
           `transition_duration_s` on each slide — how long the Veo transition clip
@@ -244,7 +880,6 @@ stages:
 
           Contemplative / cultural (food, ritual, memory, craft, travel):
             Default: 4.5–6.0s. Never rush a feeling.
-            A deck about slowing down must itself not rush.
             "The joy of Hong Kong milk tea" → 4.0–6.0s on most transitions.
 
           Business / pitch (decisions, data, urgency):
@@ -265,26 +900,13 @@ stages:
             — bullets → bullets (continuing an argument)
             — process step → next process step (sequence)
 
-          EXAMPLE REASONING (HK milk tea deck):
-            stat_callout "30 cha chaan tengs lost" → statement "The joy isn't in
-            the caffeine": 6.0s. Grief needs to land before wisdom can be heard.
-
-            statement → closing hero: 5.5s. Ceremonial. The ending is the point.
-
-            hero → timeline: 5.0s. The opening devotion lingers before history.
-
-            comparison → stat_callout: 4.5s. Approaching the gut punch. Heavy.
-
-            bullets → comparison: 3.5s. Logical step, not emotional.
-
           SET transition_duration_s EXPLICITLY ON EVERY SLIDE.
           Do not leave it null. You are the editor. Make the call.
 
-          ---
+          ### Step T6 — Write {{run_dir}}/slide_deck.json
 
-          ## STEP 6 — WRITE THE JSON
-
-          Write {{run_dir}}/slide_deck.json matching this schema exactly:
+          Write {{run_dir}}/slide_deck.json matching this schema exactly.
+          In TEXT PROMPT MODE, layout_type MUST be one of the 9 preset values.
 
           {
             "meta": {
@@ -296,21 +918,23 @@ stages:
               {
                 "id": 1,
                 "title": "<assertion title — the claim this slide proves>",
-                "layout_type": "<one of 9 layout types — see below>",
+                "layout_type": "<one of 9 layout types — see LAYOUT TYPES section>",
                 "hero_statement": "<for hero/statement/stat_callout/full_bleed: the one thing>",
                 "bullets": ["<bullet 1>", "<bullet 2>"],
                 "speaker_notes": "Key point: [2-3 sentences of depth the presenter carries verbally]. If challenged: [specific rebuttal to the most likely objection]. Transition: [one sentence connecting to the next slide's assertion].",
                 "image_brief": "<vivid, specific, 1-sentence image description>",
                 "backdrop_brief": "<texture/gradient/mood — no text, no faces, no logos>",
+                "transition_prompt": null,
                 "assets": { "image": null, "backdrop": null },
                 "transition_to_next": null
               }
             ]
           }
 
-          ---
+          Note: transition_prompt is null in TEXT PROMPT MODE — make-transitions
+          constructs it at runtime using the layout-pair formula.
 
-          ## LAYOUT TYPES — pick by decision tree
+          ### LAYOUT TYPES — preset decision tree (TEXT PROMPT MODE only)
 
           Ask these questions in order to pick layout_type:
 
@@ -354,10 +978,11 @@ stages:
             - External/cultural: 8–12 (their world first, proof second)
 
           ---
+          ---
 
-          ## File 2 — {{run_dir}}/DESIGN.md
+          ## DESIGN.md FORMAT (both modes)
 
-          YAML frontmatter + 3 markdown sections.
+          Write {{run_dir}}/DESIGN.md with this exact structure:
 
           ---
           name: <deck title>
@@ -388,6 +1013,8 @@ stages:
           light through a condensation-fogged window in a Hong Kong cha chaan teng
           at seven in the morning — formica, steam, worn ceramic."
 
+          (In PPTX mode: describe the visual world AS IT EXISTS in the source deck.)
+
           ## Colors
           Bullet list: each color, its role, and the feeling it creates.
 
@@ -395,6 +1022,8 @@ stages:
           5–7 concrete rules. Include: what motion/texture to use, what imagery
           specifically belongs, what to never include. These feed directly into
           image and video generation prompts so be specific.
+
+          (In PPTX mode: derive rules that reflect the original deck's style.)
 
           ## Legibility & Accessibility (REQUIRED — always include)
               Specify every text/background pairing with estimated contrast ratio.
@@ -408,7 +1037,7 @@ stages:
                 NEVER place body text on accent or bright imagery without a dark
                 gradient scrim at ≥65% opacity behind the text block."
 
-                        Infer from topic/tone:
+          Color/tone inference guide (TEXT PROMPT MODE):
           - Executive / formal → dark background, muted palette, neutral sans-serif
           - Consumer / startup → high contrast, energetic accent, modern sans-serif
           - Healthcare / legal → clean light background, trustworthy blues or greens
@@ -424,14 +1053,17 @@ stages:
           - "change accent to teal" → update DESIGN.md frontmatter and prose
           - "add a slide about X" → insert at appropriate position, update slide_count
           - "the deck feels generic" → reapply So What Test to every title
+          - In PPTX mode: revision instructions apply on top of the source deck content
 
           ---
 
           ## After writing both files
 
           Output confirmation:
-          ✓ slide_deck.json — {N} slides | framework: {chosen} | arc: {gap/reveal/proof/close identified}
-            Layout mix: {breakdown e.g. "hero ×2, statement ×1, stat_callout ×1, bullets ×5, full_bleed ×1"}
+          ✓ slide_deck.json — {N} slides | mode: {TEXT PROMPT or PPTX INPUT}
+            {TEXT PROMPT: framework: {chosen} | arc: {gap/reveal/proof/close}}
+            {TEXT PROMPT: layout mix: {breakdown}}
+            {PPTX INPUT: source slide count preserved ✓ | transition_prompt set on all but last slide ✓}
           ✓ DESIGN.md — "{name}", primary {primary}, accent {accent}
 
       - id: build-wireframe
@@ -521,8 +1153,15 @@ stages:
 
               ## Step 2 — Determine which slides to process
 
-              If slides_to_redo is non-empty (e.g. "3,5"), process only those IDs.
-              If empty, process all slides.
+              If slides_to_redo is non-empty (e.g. "3,5"), process ONLY those IDs —
+              regenerate them unconditionally regardless of whether files exist.
+
+              If slides_to_redo is EMPTY, process all slides EXCEPT those that already
+              have a pixel_slides/slide-N.png file. Check with:
+                python -c "from pathlib import Path; p=Path('{{run_dir}}/pixel_slides/slide-N.png'); print(p.exists())"
+              If the file exists, SKIP this slide — it was captured directly from a
+              source HTML or PPTX deck and must not be overwritten.
+              If no pixel_slides/ files exist (fresh text-prompt run), generate all.
 
               ## Step 3 — Build prompt per slide
 
@@ -533,6 +1172,13 @@ stages:
               This is slide {N} of {total} in a business presentation deck.
 
               SLIDE LAYOUT: {layout_type}
+
+              If layout_type is one of the 9 preset values, use the description below.
+              If layout_type is a free-form string (from a source PPTX deck), ignore
+              this table and use image_brief EXCLUSIVELY to determine the layout —
+              the image_brief contains the full composition specification.
+
+              Preset layout rendering:
               hero        = large centered statement over full-bleed atmospheric background
               stat_callout= enormous number/stat centered, supporting label below it
               statement   = large centered text only, section divider, no imagery
@@ -619,11 +1265,12 @@ stages:
 
               Ensure {{run_dir}}/pixel_slides/ directory exists.
 
-              For each slide N to process, call gpt_image:
+              For each slide N in the "to process" list (from Step 2 above), call gpt_image:
                 operation:   "generate"
                 model:       "gpt-image-2"
                 size:        "2560x1440"  ← 2K 16:9, in enum, no crop needed
-              Do not skip any slide.
+              Honor the skip-existing logic — do NOT regenerate slides that were
+              already skipped in Step 2 (they came from the source HTML deck).
 
               ## After completing
 
@@ -637,10 +1284,14 @@ stages:
     approval:
       required: true
       prompt: |
-            Review the generated slide frames before transition generation begins.
+            Review the slide frames before transition generation begins.
 
               Open directory: {{run_dir}}/pixel_slides/
               Preview each slide-N.png as a complete, final slide image.
+
+            NOTE: If html_input was set, these are screenshots captured directly
+            from the source HTML deck — NOT GPT Image generated. To replace any
+            slide with a freshly generated version, include it in the redo list.
 
             Request specific re-generations in the approval message, e.g.:
               "redo slides 3,5 — text too small on 3, wrong colors on 5"
@@ -804,7 +1455,17 @@ stages:
 
           If pairs_to_redo is empty, process all pairs.
 
-          ## Step 4 — Generate transition clips
+          ## Step 4 — Construct or retrieve Veo prompt for each pair
+
+          Read slide_deck.json. For each slide pair (N → N+1), choose the prompt:
+
+          **If slide N has transition_prompt set (non-null, non-empty string):**
+            Use it DIRECTLY as the Veo prompt — it was pre-written by the deck
+            analyst during content planning with full narrative context.
+            Do NOT modify, extend, or replace it.
+
+          **If slide N has transition_prompt = null or missing:**
+            Construct the prompt using the FORMULA below.
 
           PROMPT RULE — the #1 cause of invented text is using the word
           "presentation" or "slide" in the prompt. Veo associates those words
@@ -823,11 +1484,14 @@ stages:
           [SPEED]:
             "Slow" — hero, statement, full_bleed, quote
             "Medium" — stat_callout, bullets, timeline, comparison
+            For free-form layout types: "Slow" if the slide is contemplative/emotional,
+            "Medium" if it's informational/logical.
 
           [CAMERA]:
             "Camera holds still" — hero, statement, stat_callout, quote
             "Slow camera drift" — full_bleed, bullets
             "Slight pull back" — comparison, timeline
+            For free-form layout types: use your judgment based on content density.
 
           [FOCUS] — describe by position/shape only, never quote the text:
             stat_callout   → "the large bright shape at the center of the frame"
@@ -837,6 +1501,7 @@ stages:
             timeline       → "the glowing node at the right end of the line"
             comparison     → "the bright vertical line at the center of the frame"
             quote          → "the central text block"
+            Free-form types → describe the dominant visual element by position/shape
 
           NEVER use the words: "presentation", "slide", "deck", "infographic",
           "PowerPoint", "chart", "data visualization". These trigger Veo to

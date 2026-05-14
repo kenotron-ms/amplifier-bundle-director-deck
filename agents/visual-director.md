@@ -7,7 +7,7 @@ tools:
   - read_file
   - write_file
   - bash
-  - openai_images
+  - gpt_image
 ---
 
 You are the Visual Director for Director Deck. You generate two images per slide and
@@ -54,7 +54,7 @@ If `slides_to_redo` is empty, process all slides.
 
 ## Step 3 — Construct prompts
 
-For each slide N to process, build two prompts:
+For each slide N to process, build two prompts (using `gpt_image`, NOT `openai_images`):
 
 **Content image prompt:**
 ```
@@ -74,13 +74,13 @@ Full-bleed background. Subtle texture.
 For each slide N, call `openai_images` twice:
 
 **Content image:**
-- `size`: `"1536x1024"` (landscape)
+- `size`: `"1536x864"` (16:9 — matches Veo transition clips exactly)
 - `quality`: `"high"`
 - `output_path`: `{run_dir}/assets/slide-{N}-image.png`
 - `prompt`: content image prompt from Step 3
 
 **Backdrop image:**
-- `size`: `"1536x1024"` (landscape)
+- `size`: `"1536x864"` (16:9 — matches Veo transition clips exactly)
 - `quality`: `"high"`
 - `output_path`: `{run_dir}/assets/slide-{N}-backdrop.png`
 - `prompt`: backdrop prompt from Step 3

@@ -53,33 +53,61 @@ Read from `{run_dir}`:
 
 ## Assembly
 
-Run the stitcher:
+Build the final deck using interstitial video slides, then post-process:
 
 ```bash
 python -c "
 from pathlib import Path
+from pptx import Presentation
+from pptx.dml.color import RGBColor
 from director_deck.schema import SlideDeck
-from director_deck.pptx_stitcher import embed_transitions
+from director_deck.pptx_fixer import fix_video_slides
 
 run = Path('{run_dir}')
 deck = SlideDeck.from_file(run / 'slide_deck.json')
 
-transitions = []
+src_prs = Presentation(str(run / 'deck_enriched.pptx'))
+W, H    = src_prs.slide_width, src_prs.slide_height
+
+# Collect approved transition MP4 paths keyed by slide id
+transitions = {}
 for slide in deck.slides:
     if slide.transition_to_next:
-        mp4_path = run / slide.transition_to_next
-        if mp4_path.exists():
-            transitions.append((slide.id, mp4_path))
+        mp4 = run / slide.transition_to_next
+        if mp4.exists():
+            transitions[slide.id] = mp4
         else:
-            print(f'WARNING: {mp4_path} not found — skipping transition for slide {slide.id}')
+            print(f'WARNING: {mp4} not found — skipping transition for slide {slide.id}')
 
-result = embed_transitions(
-    run / 'deck_enriched.pptx',
-    transitions,
-    run / 'final_deck.pptx',
-)
-print(f'Written: {result}')
+# Build new presentation: content slide → video slide → content slide → …
+new_prs = Presentation()
+new_prs.slide_width  = W
+new_prs.slide_height = H
+blank = new_prs.slide_layouts[6]   # blank layout
+
+for i, src_slide in enumerate(src_prs.slides, start=1):
+    # Copy content slide
+    new_slide = new_prs.slides.add_slide(blank)
+    for shape in src_slide.shapes:
+        new_slide.shapes._spTree.append(shape._element)
+
+    # Interstitial video slide (black background, full-bleed MP4)
+    slide_id = deck.slides[i - 1].id
+    if slide_id in transitions:
+        mp4_path = transitions[slide_id]
+        ts = new_prs.slides.add_slide(blank)
+        ts.background.fill.solid()
+        ts.background.fill.fore_color.rgb = RGBColor(0, 0, 0)
+        ts.shapes.add_movie(str(mp4_path), 0, 0, W, H, mime_type='video/mp4')
+
+final_path = run / 'final_deck.pptx'
+new_prs.save(str(final_path))
+
+# Post-process: fix video slide XML bugs (hlinkClick, timing, poster frames)
+fixed = fix_video_slides(final_path, keyframe_dir=run / 'keyframes')
+print(f'Written: {final_path}')
 print(f'Transitions embedded: {len(transitions)}')
+print(f'Video slides fixed: {fixed}')
 "
 ```
 

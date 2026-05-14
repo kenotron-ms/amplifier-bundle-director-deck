@@ -11,13 +11,15 @@ agents:
 tools:
   - director_deck/html_renderer.py
   - director_deck/pptx_builder.py
+  - director_deck/pptx_fixer.py
+  - director_deck/video_processor.py
   - director_deck/screenshot_tool.py
-  - director_deck/pptx_stitcher.py
 recipes:
   - recipes/director-deck.yaml
+  - recipes/director-deck-continue.yaml
 external_deps:
-  - amplifier-module-tool-openai-images
-  - veo (Amplifier built-in)
+  - amplifier-module-tool-gpt-image
+  - amplifier-module-tool-veo
 ---
 
 # Director Deck

@@ -10,9 +10,12 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
     "python-pptx>=0.6.23",
+    "lxml>=4.0",
+    "Pillow>=9.0",
     "playwright>=1.44",
     "pyyaml>=6.0",
 ]
+# Note: ffmpeg and ffprobe must also be available on PATH (used by video_processor.py)
 
 [project.optional-dependencies]
 dev = [

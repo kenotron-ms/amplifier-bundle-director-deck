@@ -114,7 +114,7 @@ prompt: >
   Smooth cinematic transition between two presentation slides.
   {DESIGN.md Overview first sentence}. No text overlays, no people, no logos.
   Natural motion flows from the first frame to the second.
-duration_seconds: "4"
+duration_seconds: "8"
 aspect_ratio: "16:9"
 output_path: {run_dir}/transitions/slide-{N}-to-{N+1}.mp4
 ```
