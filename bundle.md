@@ -8,12 +8,6 @@ agents:
   - agents/visual-director.md
   - agents/transition-director.md
   - agents/deck-stitcher.md
-tools:
-  - director_deck/html_renderer.py
-  - director_deck/pptx_builder.py
-  - director_deck/pptx_fixer.py
-  - director_deck/video_processor.py
-  - director_deck/screenshot_tool.py
 recipes:
   - recipes/director-deck.yaml
   - recipes/director-deck-continue.yaml
