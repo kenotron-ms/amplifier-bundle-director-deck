@@ -132,6 +132,12 @@ context:
                        #   skipping GPT Image generation — html_input takes precedence over pptx_input
   run_slug: ""         # Optional: slug override (derived from prompt/PPTX/HTML filename)
   run_dir: ""          # Computed by init-run-dir step (output: run_dir → stdout)
+  vlm_refine: ""       # Optional opt-in for Strategy 2 (html_input): after the overflow-based
+                       #   ladder search picks a viewport, ask a VLM whether the slide looks
+                       #   cramped/small; bump the viewport up one step if so. Caps at one
+                       #   bump per slide (single VLM call per slide). Set to "true"/"1"/"yes"
+                       #   to enable. Requires the openai package + OPENAI_API_KEY available
+                       #   at recipe runtime. Off by default (silent skip).
   _approval_message: ""  # Set automatically by approval gates; default empty
 
 # ---------------------------------------------------------------------------
@@ -303,16 +309,65 @@ stages:
         command: |
           .venv/bin/python -c "
           import json, sys, hashlib
+          from io import BytesIO
           from pathlib import Path
 
           run_dir    = Path('{{run_dir}}')
           html_input = '{{html_input}}'.strip()
+          vlm_refine_enabled = '{{vlm_refine}}'.strip().lower() in ('true', '1', 'yes', 'on')
 
           if not html_input:
               print('No HTML input - skipping')
               sys.exit(0)
 
           from playwright.sync_api import sync_playwright
+          from PIL import Image
+
+          # ── Optional VLM refinement for Strategy 2 ────────────────────────────
+          # When vlm_refine is enabled, after the overflow-based ladder search
+          # picks a viewport, we ask a vision model whether the slide still
+          # looks cramped or small at that size — and bump it up one ladder
+          # step if so. This catches the "fits but visually packed" case that
+          # a pure overflow probe misses (flex layouts can shrink content to
+          # fit without setting scrollHeight > clientHeight).
+          #
+          # Capped at one bump per slide (one VLM call per slide). Requires
+          # the openai package + OPENAI_API_KEY at recipe runtime.
+          def _vlm_cramped_check(png_bytes, slide_num):
+              """Ask OpenAI Vision if this slide is hard to read. Returns
+              'cramped', 'small', 'good', or '' on error/skip."""
+              try:
+                  import base64
+                  import openai
+                  client = openai.OpenAI()
+                  b64 = base64.b64encode(png_bytes).decode()
+                  resp = client.chat.completions.create(
+                      model='gpt-4o-mini',
+                      messages=[{
+                          'role': 'user',
+                          'content': [
+                              {'type': 'text', 'text':
+                                  'You are evaluating a single slide from a business '
+                                  'presentation rendered for projection. Is the text on '
+                                  'this slide hard to read at presentation distance '
+                                  'because (a) the font is too small relative to the '
+                                  'canvas, or (b) the layout is too cramped (elements '
+                                  'crowded together with insufficient whitespace)? '
+                                  'Reply with exactly one word: "cramped", "small", '
+                                  'or "good".'
+                              },
+                              {'type': 'image_url', 'image_url': {
+                                  'url': f'data:image/png;base64,{b64}',
+                              }},
+                          ],
+                      }],
+                      max_tokens=10,
+                      temperature=0.0,
+                  )
+                  return (resp.choices[0].message.content or '').strip().lower()
+              except Exception as exc:
+                  print(f'  VLM check failed for slide {slide_num}: {exc} — keeping current viewport')
+                  return ''
 
           # Resolve to absolute path (handle both file paths and URLs)
           if html_input.startswith('http://') or html_input.startswith('https://'):
@@ -359,40 +414,135 @@ stages:
                   n += 1
 
               # ── Strategy 2: Keyboard-navigable deck (Reveal.js, Impress.js, etc.)
+              #
+              # Strategy 2 renders arbitrary HTML decks (Reveal.js, Impress.js,
+              # generic .slide.active toggles, etc.) where:
+              #
+              #   * Body text is typically fixed-px (e.g. 18px) and titles use
+              #     clamp(...vw, Npx) — so fonts occupy a SMALLER fraction of
+              #     canvas at a LARGER viewport. The default 1536×864 produces
+              #     "too small with too much empty space" output on dense decks.
+              #
+              #   * Different slides need different viewports — a sparse hero
+              #     fits at 1280×720 (biggest text); a dense risk slide may
+              #     need to bump up the ladder before its content fits.
+              #
+              # Algorithm: for each slide, linear-search the viewport ladder
+              # for the smallest viewport where the slide's active element
+              # doesn't overflow. Render at that viewport with DSF=2 for crisp
+              # serif rendering. Pillow-LANCZOS-downscale to W×H for output.
+              #
+              # We close + relaunch the browser with a new context (DSF=2)
+              # before entering Strategy 2 so Strategy 1 keeps its existing
+              # behaviour (element-bounding-box screenshots at DSF=1).
               if captured == 0:
-                  seen_hashes = []
-                  slide_num   = 1
-                  # Reset to start
-                  page.keyboard.press('Home')
-                  page.wait_for_timeout(600)
+                  browser.close()
+                  browser = pw.chromium.launch()
+                  NAV_LADDER = [
+                      (1280, 720),  (1408, 792),  (1536, 864),  (1664, 936),
+                      (1792, 1008), (1920, 1080), (2048, 1152), (2176, 1224),
+                      (2304, 1296), (2432, 1368), (2560, 1440),
+                  ]
+                  ctx = browser.new_context(
+                      viewport={'width': NAV_LADDER[0][0], 'height': NAV_LADDER[0][1]},
+                      device_scale_factor=2,
+                  )
+                  page = ctx.new_page()
+                  page.goto(url, wait_until='networkidle')
+                  page.wait_for_timeout(2000)
+
+                  OVERFLOW_PROBE = (
+                      "(() => {"
+                      "  const sels = ['.slide.active','.present','section.active',"
+                      "                '.reveal section.present','.impress-on-active'];"
+                      "  for (const s of sels) {"
+                      "    const el = document.querySelector(s);"
+                      "    if (el) return el.scrollHeight - el.clientHeight;"
+                      "  }"
+                      "  return document.body.scrollHeight - document.body.clientHeight;"
+                      "})()"
+                  )
+
+                  def navigate_to(n_one_based):
+                      """Home + ArrowRight × (n-1) — fresh navigation from start."""
+                      page.keyboard.press('Home')
+                      page.wait_for_timeout(500)
+                      for _ in range(n_one_based - 1):
+                          page.keyboard.press('ArrowRight')
+                          page.wait_for_timeout(400)
+
+                  seen_hashes    = []
+                  viewports_used = []
+                  slide_num      = 1
 
                   while slide_num <= 100:
-                      img_bytes = page.screenshot()
-                      h = hashlib.md5(img_bytes).hexdigest()
+                      # ── Ladder search: smallest viewport where this slide fits
+                      chosen_w, chosen_h = NAV_LADDER[-1]
+                      for cand_w, cand_h in NAV_LADDER:
+                          page.set_viewport_size({'width': cand_w, 'height': cand_h})
+                          page.wait_for_timeout(250)
+                          navigate_to(slide_num)
+                          try:
+                              overflow_y = page.evaluate(OVERFLOW_PROBE)
+                          except Exception:
+                              overflow_y = 0
+                          if overflow_y is None or overflow_y <= 4:
+                              chosen_w, chosen_h = cand_w, cand_h
+                              break
 
-                      # Stop if we've looped back to a previously-seen frame
-                      if h in seen_hashes and slide_num > 2:
+                      # ── Optional VLM refinement (single bump per slide max)
+                      # The overflow probe says "fits" when scrollHeight ≤ clientHeight,
+                      # but flex layouts can SHRINK content to fit (no overflow, but
+                      # visually cramped). The VLM catches this case. Only runs when
+                      # vlm_refine is enabled and we're not already at top of ladder.
+                      if vlm_refine_enabled:
+                          current_idx = NAV_LADDER.index((chosen_w, chosen_h))
+                          if current_idx < len(NAV_LADDER) - 1:
+                              preview = page.screenshot()
+                              verdict = _vlm_cramped_check(preview, slide_num)
+                              if verdict in ('cramped', 'small'):
+                                  current_idx += 1
+                                  chosen_w, chosen_h = NAV_LADDER[current_idx]
+                                  page.set_viewport_size({'width': chosen_w, 'height': chosen_h})
+                                  page.wait_for_timeout(250)
+                                  navigate_to(slide_num)
+                                  print(f'  VLM: slide {slide_num} rated "{verdict}" → bumped to {chosen_w}×{chosen_h}')
+
+                      # ── Capture at chosen viewport (native pixels: chosen × 2 via DSF)
+                      img_bytes = page.screenshot()
+                      hsh = hashlib.md5(img_bytes).hexdigest()
+
+                      # Loop detection — bail if we've seen this exact frame before
+                      if hsh in seen_hashes and slide_num > 2:
                           print(f'  Detected loop at slide {slide_num} — stopping')
                           break
 
+                      # ── Downscale to target W × H via Pillow LANCZOS
+                      img = Image.open(BytesIO(img_bytes))
+                      if img.size != (W, H):
+                          img = img.resize((W, H), Image.LANCZOS)
                       out = px_dir / f'slide-{slide_num}.png'
-                      out.write_bytes(img_bytes)
-                      seen_hashes.append(h)
-                      print(f'  slide-{slide_num}.png (keyboard nav)')
+                      img.save(out, 'PNG', optimize=True)
+
+                      seen_hashes.append(hsh)
+                      viewports_used.append((slide_num, chosen_w, chosen_h))
+                      print(f'  slide-{slide_num}.png (viewport {chosen_w}×{chosen_h}, DSF=2)')
                       captured = slide_num
 
-                      # Advance to next slide
+                      # ── Advance and check for end-of-deck (at chosen viewport)
                       page.keyboard.press('ArrowRight')
-                      page.wait_for_timeout(700)
-
-                      # Check if page changed
+                      page.wait_for_timeout(500)
                       next_bytes = page.screenshot()
-                      next_h     = hashlib.md5(next_bytes).hexdigest()
-                      if next_h == h:
+                      if hashlib.md5(next_bytes).hexdigest() == hsh:
                           print(f'  No change after ArrowRight — end of deck')
                           break
 
                       slide_num += 1
+
+                  # Summary of viewports used (helpful for diagnosing overfit decks)
+                  if viewports_used:
+                      uniq_v = sorted(set((vw, vh) for _, vw, vh in viewports_used))
+                      print(f'  Viewports used: {uniq_v}')
 
               browser.close()
 
