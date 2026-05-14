@@ -303,6 +303,7 @@ stages:
         command: |
           .venv/bin/python -c "
           import json, sys, hashlib
+          from io import BytesIO
           from pathlib import Path
 
           run_dir    = Path('{{run_dir}}')
@@ -313,6 +314,7 @@ stages:
               sys.exit(0)
 
           from playwright.sync_api import sync_playwright
+          from PIL import Image
 
           # Resolve to absolute path (handle both file paths and URLs)
           if html_input.startswith('http://') or html_input.startswith('https://'):
@@ -359,15 +361,58 @@ stages:
                   n += 1
 
               # ── Strategy 2: Keyboard-navigable deck (Reveal.js, Impress.js, etc.)
+              # Adaptive viewport: render at a smaller viewport (NAV_W × NAV_H)
+              # for bigger text relative to canvas, then downscale to W × H via
+              # Pillow LANCZOS. Most decks use fixed-px body text and vh-based
+              # padding, so fonts occupy a larger fraction of the canvas at
+              # smaller viewport — producing more legible output. Per-slide
+              # overflow check (scrollHeight > clientHeight on the active slide
+              # element) falls back to W × H for slides whose content doesn't
+              # fit at the smaller viewport.
               if captured == 0:
+                  NAV_W, NAV_H = 1280, 720   # smaller = bigger text vs canvas
+                  page.set_viewport_size({'width': NAV_W, 'height': NAV_H})
+                  page.wait_for_timeout(300)  # let CSS reflow at new viewport
+
+                  OVERFLOW_PROBE = (
+                      "(() => {"
+                      "  const sels = ['.slide.active','.present','section.active',"
+                      "                '.reveal section.present','.impress-on-active'];"
+                      "  for (const s of sels) {"
+                      "    const el = document.querySelector(s);"
+                      "    if (el) return el.scrollHeight - el.clientHeight;"
+                      "  }"
+                      "  return document.body.scrollHeight - document.body.clientHeight;"
+                      "})()"
+                  )
+
                   seen_hashes = []
                   slide_num   = 1
+                  overflowed  = []
                   # Reset to start
                   page.keyboard.press('Home')
                   page.wait_for_timeout(600)
 
                   while slide_num <= 100:
+                      # Detect overflow at the smaller viewport; if any, render
+                      # this slide at the original W × H instead.
+                      try:
+                          overflow_y = page.evaluate(OVERFLOW_PROBE)
+                      except Exception:
+                          overflow_y = 0
+                      fallback = overflow_y is not None and overflow_y > 4
+                      if fallback:
+                          page.set_viewport_size({'width': W, 'height': H})
+                          page.wait_for_timeout(300)
+                          overflowed.append(slide_num)
+
                       img_bytes = page.screenshot()
+
+                      # Restore the smaller viewport for navigation consistency
+                      if fallback:
+                          page.set_viewport_size({'width': NAV_W, 'height': NAV_H})
+                          page.wait_for_timeout(300)
+
                       h = hashlib.md5(img_bytes).hexdigest()
 
                       # Stop if we've looped back to a previously-seen frame
@@ -375,10 +420,19 @@ stages:
                           print(f'  Detected loop at slide {slide_num} — stopping')
                           break
 
+                      # Downscale via Pillow LANCZOS to target W × H. Small
+                      # upscale (1280→1536) introduces minimal blur on text;
+                      # crispness loss is far less than the legibility gain
+                      # from bigger native text size.
+                      img = Image.open(BytesIO(img_bytes))
+                      if img.size != (W, H):
+                          img = img.resize((W, H), Image.LANCZOS)
                       out = px_dir / f'slide-{slide_num}.png'
-                      out.write_bytes(img_bytes)
+                      img.save(out, 'PNG', optimize=True)
+
                       seen_hashes.append(h)
-                      print(f'  slide-{slide_num}.png (keyboard nav)')
+                      fb_note = ' (overflow at smaller viewport — fell back to W×H)' if fallback else ''
+                      print(f'  slide-{slide_num}.png (keyboard nav, viewport {NAV_W}×{NAV_H}){fb_note}')
                       captured = slide_num
 
                       # Advance to next slide
@@ -393,6 +447,9 @@ stages:
                           break
 
                       slide_num += 1
+
+                  if overflowed:
+                      print(f'  Note: {len(overflowed)} slide(s) overflowed at {NAV_W}×{NAV_H}; rendered at {W}×{H}: {overflowed}')
 
               browser.close()
 
