@@ -14,6 +14,13 @@ dependencies = [
     "Pillow>=9.0",
     "playwright>=1.44",
     "pyyaml>=6.0",
+    # static-ffmpeg ships pre-built ffmpeg + ffprobe binaries and patches PATH
+    # on import. video_processor.py shells out to these as subprocess; this
+    # makes the bundle work cross-platform without requiring a system install
+    # (brew install ffmpeg / apt install ffmpeg). Power users who prefer
+    # their own ffmpeg can still use it — static-ffmpeg only adds itself to
+    # PATH; whatever's already on PATH wins.
+    "static-ffmpeg>=2.0",
 ]
 # Note: ffmpeg and ffprobe must also be available on PATH (used by video_processor.py)
 
