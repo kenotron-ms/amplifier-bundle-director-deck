@@ -64,6 +64,35 @@ Write a valid JSON file matching this schema exactly:
 - `backdrop_brief`: specifies texture/gradient/mood only — no text, no faces, no logos
 - `assets` and `transition_to_next` are always `null` / `{ "image": null, "backdrop": null }` from this agent
 
+**Comparison layout — column boundary convention:**
+When `layout_type` is `comparison` and the columns are intentionally lopsided
+(e.g. 6 items left, 3 right), insert an empty string `""` in `bullets` at the
+exact split point. The renderer reads `""` as the column boundary, places
+preceding bullets in the left column and following bullets in the right
+column, and consumes (does not render) the sentinel itself. If `""` is
+absent, the renderer falls back to halving `bullets` at `len//2` — fine for
+symmetric comparisons but wrong for uneven ones. Example:
+
+```json
+{
+  "layout_type": "comparison",
+  "title": "Before / After",
+  "bullets": [
+    "Manual deploys taking 40 min",
+    "Three engineers required",
+    "No rollback path",
+    "",
+    "One-click deploy in 4 min",
+    "Single approver"
+  ]
+}
+```
+This renders 3 left-column items + 2 right-column items. Without the `""`,
+the renderer would split at `bullets[:3] / bullets[3:]` and produce 3 left
+("Manual deploys...", "Three engineers...", "No rollback...") + 3 right
+("", "One-click deploy...", "Single approver") — with a stray empty bullet
+rendered in the right column.
+
 ## Output 2: DESIGN.md
 
 Use the Google Stitch DESIGN.md spec format. The file MUST begin with a YAML frontmatter block.
