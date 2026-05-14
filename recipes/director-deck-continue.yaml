@@ -184,7 +184,7 @@ stages:
         type: bash
         timeout: 120
         command: |
-          .venv/bin/python -c "
+          python -c "
           import json
           from pathlib import Path
           from PIL import Image, ImageFilter
@@ -246,7 +246,7 @@ stages:
 
           Run this Python to confirm keyframes are present:
 
-          .venv/bin/python -c "
+          python -c "
           from pathlib import Path
           import json
           run = Path('{{run_dir}}')
@@ -261,7 +261,7 @@ stages:
 
           If any are missing, copy from pixel_slides/ (already 1536×864 after prepare-keyframes ran):
 
-          .venv/bin/python -c "
+          python -c "
           import shutil, json
           from pathlib import Path
           run = Path('{{run_dir}}')
@@ -356,7 +356,7 @@ stages:
         type: bash
         timeout: 600
         command: |
-          .venv/bin/python -c "
+          python -c "
           from pathlib import Path
           from director_deck.schema import SlideDeck
           from director_deck.video_processor import process_transition, suggest_transition_duration
@@ -419,7 +419,7 @@ stages:
         type: bash
         timeout: 300
         command: |
-          .venv/bin/python -c "
+          python -c "
           from pathlib import Path
           from pptx import Presentation
           from pptx.util import Inches

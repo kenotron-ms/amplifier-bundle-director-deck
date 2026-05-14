@@ -55,22 +55,22 @@ Three human approval gates let you review and iterate at each stage before commi
 **Prerequisites:**
 
 - Python 3.11+
-- `ffmpeg` and `ffprobe` (for transition processing)
 - Playwright Chromium (for HTML capture and wireframe screenshots)
 - An Amplifier setup with `gpt-image` and `veo` modules
+
+`ffmpeg` and `ffprobe` are pulled in transitively via the `static-ffmpeg`
+Python package — no system install required. If a system `ffmpeg` is already
+on `PATH` it takes precedence.
 
 ```bash
 # Install the bundle
 amplifier bundle add git+https://github.com/microsoft/director@main --app
 
-# Install Python dependencies
+# Install Python dependencies (includes static-ffmpeg → ffmpeg + ffprobe)
 pip install director-deck
 
 # Install Playwright browser
 playwright install chromium
-
-# Install ffmpeg (macOS)
-brew install ffmpeg
 ```
 
 ---
@@ -222,6 +222,6 @@ director/
 | `Pillow` | Image resizing and center-cropping for Veo keyframes |
 | `playwright` | Headless Chromium for HTML capture and wireframe screenshots |
 | `pyyaml` | `DESIGN.md` frontmatter parsing |
-| `ffmpeg` / `ffprobe` | Transition clip retiming and easing |
+| `static-ffmpeg` | Ships `ffmpeg` + `ffprobe` binaries for transition clip retiming and easing — no system install required |
 | GPT Image 2 (`amplifier-module-tool-gpt-image`) | Slide image generation at 2560×1440 |
 | Veo 3.1 (`amplifier-module-tool-veo`) | Cinematic interpolation video between slides |

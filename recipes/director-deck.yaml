@@ -179,7 +179,7 @@ stages:
         type: bash
         timeout: 60
         command: |
-          .venv/bin/python -c "
+          python -c "
           import json, sys
           from pathlib import Path
 
@@ -301,7 +301,7 @@ stages:
         type: bash
         timeout: 120
         command: |
-          .venv/bin/python -c "
+          python -c "
           import json, sys, hashlib
           from pathlib import Path
 
@@ -1072,7 +1072,7 @@ stages:
         type: bash
         timeout: 300
         command: |
-          .venv/bin/python -c "
+          python -c "
           from pathlib import Path
           from director_deck.schema import SlideDeck, DesignTokens
           from director_deck.html_renderer import write_deck_html
@@ -1315,7 +1315,7 @@ stages:
         type: bash
         timeout: 120
         command: |
-          .venv/bin/python -c "
+          python -c "
           import json
           from pathlib import Path
           from PIL import Image, ImageFilter
@@ -1553,7 +1553,7 @@ stages:
         type: bash
         timeout: 600
         command: |
-          .venv/bin/python -c "
+          python -c "
           from pathlib import Path
           from director_deck.schema import SlideDeck
           from director_deck.video_processor import process_transition, suggest_transition_duration
@@ -1632,7 +1632,7 @@ stages:
         type: bash
         timeout: 300
         command: |
-          .venv/bin/python -c "
+          python -c "
           from pathlib import Path
           from pptx import Presentation
           from pptx.util import Inches
