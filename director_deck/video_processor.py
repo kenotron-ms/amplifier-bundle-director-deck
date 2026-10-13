@@ -53,6 +53,43 @@ class VideoProcessingError(RuntimeError):
     """Raised when ffmpeg/ffprobe fails or produces an unusable result."""
 
 
+_FFMPEG_REMEDIATION = (
+    "Install system ffmpeg (including ffprobe), or install the package "
+    "dependencies with `python -m pip install 'static-ffmpeg>=3.0'`."
+)
+
+
+def _ensure_ffmpeg_on_path() -> None:
+    """Ensure a complete ffmpeg/ffprobe pair is discoverable.
+
+    An existing complete pair wins. When either executable is absent,
+    static-ffmpeg provisions a matched pair and prepends its directory to PATH.
+    """
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        return
+
+    try:
+        import static_ffmpeg
+
+        static_ffmpeg.add_paths(weak=True)
+    except Exception as exc:
+        raise VideoProcessingError(
+            "ffmpeg and ffprobe were not both found on PATH, and static-ffmpeg "
+            f"could not provide them: {exc}. {_FFMPEG_REMEDIATION}"
+        ) from exc
+
+    missing = [
+        executable
+        for executable in ("ffmpeg", "ffprobe")
+        if shutil.which(executable) is None
+    ]
+    if missing:
+        raise VideoProcessingError(
+            f"{', '.join(missing)} not found on PATH after static-ffmpeg setup. "
+            f"{_FFMPEG_REMEDIATION}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # ffprobe
 # ---------------------------------------------------------------------------
@@ -68,8 +105,7 @@ def get_video_duration(path: Path) -> float:
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"Video not found: {path}")
-    if shutil.which("ffprobe") is None:
-        raise VideoProcessingError("ffprobe not found on PATH. Install ffmpeg.")
+    _ensure_ffmpeg_on_path()
 
     result = subprocess.run(
         [
@@ -204,8 +240,7 @@ def process_transition(
 
     if not input_mp4.is_file():
         raise FileNotFoundError(f"Input video not found: {input_mp4}")
-    if shutil.which("ffmpeg") is None:
-        raise VideoProcessingError("ffmpeg not found on PATH.")
+    _ensure_ffmpeg_on_path()
     if target_duration_s <= 0:
         raise ValueError(f"target_duration_s must be > 0, got {target_duration_s}")
     if hold_s < 0:

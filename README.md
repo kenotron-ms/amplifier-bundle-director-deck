@@ -55,69 +55,90 @@ Three human approval gates let you review and iterate at each stage before commi
 **Prerequisites:**
 
 - Python 3.11+
-- `ffmpeg` and `ffprobe` (for transition processing)
 - Playwright Chromium (for HTML capture and wireframe screenshots)
-- An Amplifier setup with `gpt-image` and `veo` modules
+- A working Amplifier setup with its normal tools and the recipes behavior
+- `OPENAI_API_KEY` for slide images and `GOOGLE_API_KEY` for Veo transitions
+
+When either `ffmpeg` or `ffprobe` is missing, the Python package lazily downloads
+them through `static-ffmpeg>=3.0` (including Linux ARM64 support). This first-use
+download requires network access. A complete existing system pair takes precedence;
+if either binary is missing, the fallback selects its matching static pair.
+Install system ffmpeg if the download is blocked or your platform is unsupported.
 
 ```bash
-# Install the bundle
-amplifier bundle add git+https://github.com/microsoft/director@main --app
+# Add Director Deck's image/video tools to your normal Amplifier sessions.
+# Do not select it as your root bundle: keep your usual bundle selected.
+amplifier bundle add \
+  git+https://github.com/kenotron-ms/amplifier-bundle-director-deck@main \
+  --name director-deck --app
 
-# Install Python dependencies
-pip install director-deck
+# Add the recipe runner if your setup does not already include it.
+amplifier bundle add \
+  'git+https://github.com/microsoft/amplifier-bundle-recipes@main#subdirectory=behaviors/recipes.yaml' \
+  --app
 
-# Install Playwright browser
-playwright install chromium
-
-# Install ffmpeg (macOS)
-brew install ffmpeg
+# Install the Python package in a dedicated environment.
+python3 -m venv .venv-director-deck
+source .venv-director-deck/bin/activate
+python -m pip install \
+  'git+https://github.com/kenotron-ms/amplifier-bundle-director-deck@main'
+python -m playwright install chromium
 ```
+
+Run Amplifier from that activated environment so recipe bash steps find the
+same `python` and dependencies. On Linux, Playwright may also require browser
+system libraries (`python -m playwright install-deps chromium`, which can require
+administrator privileges). Image and Veo generation use paid APIs.
+
+Linux ARM64 (`aarch64`) installs use Playwright 1.55 and its matched Chromium 140 build:
+the newer Chromium 153 build crashed during page creation in verification.
+Other platforms retain the existing Playwright version range.
 
 ---
 
 ## Quick Start
 
-```
-Run the director-deck recipe with your input:
-
-"Make a 10-slide deck about our Series A pitch. Focus on market opportunity,
-product, and traction. Use a clean, modern blue and white palette."
+```bash
+amplifier run \
+  "Execute @director-deck:recipes/director-deck.yaml with prompt='Make a 10-slide Series A pitch focused on market opportunity, product, and traction.'"
 ```
 
-Or in a session, invoke the recipe directly:
+Or ask an existing Amplifier session to invoke the `recipes` tool with one of
+these inputs. The actual context names are `prompt`, `pptx_input`, and `html_input`;
+HTML takes precedence when both file inputs are provided.
 
 ```yaml
 # From a text prompt
-recipes:
-  path: director-deck:recipes/director-deck.yaml
-  context:
-    input_type: prompt
-    user_input: "Your presentation description here"
+operation: execute
+recipe_path: "@director-deck:recipes/director-deck.yaml"
+context:
+  prompt: "Your presentation description here"
 
 # From an existing PPTX
-recipes:
-  path: director-deck:recipes/director-deck.yaml
-  context:
-    input_type: pptx
-    input_file: /path/to/existing.pptx
+operation: execute
+recipe_path: "@director-deck:recipes/director-deck.yaml"
+context:
+  pptx_input: /absolute/path/to/existing.pptx
 
 # From an existing HTML presentation
-recipes:
-  path: director-deck:recipes/director-deck.yaml
-  context:
-    input_type: html
-    input_file: /path/to/presentation.html
+operation: execute
+recipe_path: "@director-deck:recipes/director-deck.yaml"
+context:
+  html_input: /absolute/path/to/presentation.html
 ```
+
+HTML capture preserves existing slide images and skips GPT Image generation.
+The recovered adaptive capture is automatic for keyboard-navigable decks.
 
 ### Continuing a Run
 
 If you've already generated content and want to re-run visuals and transitions from an existing run directory:
 
 ```yaml
-recipes:
-  path: director-deck:recipes/director-deck-continue.yaml
-  context:
-    run_dir: runs/2026-04-22-series-a-pitch
+operation: execute
+recipe_path: "@director-deck:recipes/director-deck-continue.yaml"
+context:
+  run_dir: runs/2026-04-22-series-a-pitch
 ```
 
 ---
@@ -222,6 +243,30 @@ director/
 | `Pillow` | Image resizing and center-cropping for Veo keyframes |
 | `playwright` | Headless Chromium for HTML capture and wireframe screenshots |
 | `pyyaml` | `DESIGN.md` frontmatter parsing |
-| `ffmpeg` / `ffprobe` | Transition clip retiming and easing |
+| `static-ffmpeg` | Downloads `ffmpeg` + `ffprobe` on first use when system binaries are missing |
 | GPT Image 2 (`amplifier-module-tool-gpt-image`) | Slide image generation at 2560×1440 |
 | Veo 3.1 (`amplifier-module-tool-veo`) | Cinematic interpolation video between slides |
+
+## Development Verification
+
+From a checkout, in your activated Python environment:
+
+```bash
+python -m pip install -e '.[dev]'
+python -m playwright install chromium
+python -m pytest
+```
+
+The recovery was verified on Linux `aarch64` with Python 3.11 and 3.12:
+**82 tests passed on each**, including real Chromium screenshots and MP4 retiming.
+An offline smoke also executed the shipped main and continuation recipe commands:
+two-slide HTML/PPTX input, adaptive capture, a three-slide final PPTX with embedded
+video, and live HTML player navigation. The static ffmpeg fallback was exercised
+with no system ffmpeg on `PATH`.
+
+Keep deterministic Python recipe commands in single-quoted heredocs: embedded
+JavaScript and Python quotes must reach Python unchanged. The recipe regression
+tests guard shell syntax and Python 3.11 compatibility.
+
+These checks use synthetic fixtures, not live GPT Image/Veo generation.
+Manual PowerPoint Presenter-mode playback was not re-tested.

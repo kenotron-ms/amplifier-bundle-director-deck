@@ -26,9 +26,13 @@ prompt → ghost-deck-writer → slide-architect → [Gate 1: content & identity
 ## Usage
 
 ```bash
-amplifier recipe run recipes/director-deck.yaml \
-  --context prompt="Series A pitch for a B2B SaaS devtools company"
+amplifier run \
+  "Execute @director-deck:recipes/director-deck.yaml with prompt='Series A pitch for a B2B SaaS devtools company'"
 ```
+
+Install this bundle as an app overlay onto your normal Amplifier setup, with the
+recipes behavior available. Install the Python package from this repository in the
+environment used by recipe bash steps. See [README.md](README.md#installation).
 
 ## Run Directory Structure
 

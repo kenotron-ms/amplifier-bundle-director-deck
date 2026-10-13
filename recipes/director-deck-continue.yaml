@@ -1,5 +1,8 @@
+# v1.0.1 (2026-10-02):
+#   - BUGFIX: use quoted heredocs for deterministic Python bash steps so shell
+#     transport preserves embedded Python syntax and comments.
 name: director-deck-continue
-version: "1.0.0"
+version: "1.0.1"
 description: >
   Continuation recipe for director-deck: visual generation → transitions → final assembly.
   Stage 1 (content + wireframe) must already be complete. Provide run_dir pointing to
@@ -184,7 +187,7 @@ stages:
         type: bash
         timeout: 120
         command: |
-          .venv/bin/python -c "
+          python - <<'PY_DIRECTOR_DECK_CONTINUE_PREPARE_KEYFRAMES'
           import json
           from pathlib import Path
           from PIL import Image, ImageFilter
@@ -218,7 +221,7 @@ stages:
               img.save(kf_dir / src.name, 'PNG')
               print(f'  {src.name}: {sw}x{sh} → {tw}x{th}')
           print('done')
-          "
+          PY_DIRECTOR_DECK_CONTINUE_PREPARE_KEYFRAMES
 
       - id: make-transitions
         type: agent
@@ -246,13 +249,17 @@ stages:
 
           Run this Python to confirm keyframes are present:
 
-          .venv/bin/python -c "
+          python -c "
           from pathlib import Path
           import json
           run = Path('{{run_dir}}')
           slides = json.loads((run / 'slide_deck.json').read_text())['slides']
           kf_dir = run / 'keyframes'
-          missing = [s['id'] for s in slides if not (kf_dir / f'slide-{s[\"id\"]}.png').exists()]
+          missing = []
+          for slide in slides:
+              s_id = slide['id']
+              if not (kf_dir / f'slide-{s_id}.png').exists():
+                  missing.append(s_id)
           if missing:
               print(f'MISSING keyframes: {missing}')
           else:
@@ -261,14 +268,15 @@ stages:
 
           If any are missing, copy from pixel_slides/ (already 1536×864 after prepare-keyframes ran):
 
-          .venv/bin/python -c "
+          python -c "
           import shutil, json
           from pathlib import Path
           run = Path('{{run_dir}}')
           slides = json.loads((run / 'slide_deck.json').read_text())['slides']
-          for s in slides:
-              src = run / 'pixel_slides' / f'slide-{s[\"id\"]}.png'
-              dst = run / 'keyframes' / f'slide-{s[\"id\"]}.png'
+          for slide in slides:
+              s_id = slide['id']
+              src = run / 'pixel_slides' / f'slide-{s_id}.png'
+              dst = run / 'keyframes' / f'slide-{s_id}.png'
               if not dst.exists() and src.exists():
                   shutil.copy2(src, dst)
                   print(f'Copied: {dst.name}')
@@ -356,7 +364,7 @@ stages:
         type: bash
         timeout: 600
         command: |
-          .venv/bin/python -c "
+          python - <<'PY_DIRECTOR_DECK_CONTINUE_PROCESS_TRANSITIONS'
           from pathlib import Path
           from director_deck.schema import SlideDeck
           from director_deck.video_processor import process_transition, suggest_transition_duration
@@ -393,7 +401,7 @@ stages:
           data['slides'][-1]['transition_to_next'] = None
           (run / 'slide_deck.json').write_text(json.dumps(data, indent=2, ensure_ascii=False))
           print('slide_deck.json updated — transition_to_next now points to transitions/')
-          "
+          PY_DIRECTOR_DECK_CONTINUE_PROCESS_TRANSITIONS
 
     approval:
       required: true
@@ -419,7 +427,7 @@ stages:
         type: bash
         timeout: 300
         command: |
-          .venv/bin/python -c "
+          python - <<'PY_DIRECTOR_DECK_CONTINUE_ASSEMBLE'
           from pathlib import Path
           from pptx import Presentation
           from pptx.util import Inches
@@ -498,7 +506,7 @@ stages:
           _tokens = DesignTokens.from_design_md(run / 'DESIGN.md')
           write_live_html(deck, run, run / 'deck_live.html', tokens=_tokens)
           print(f'HTML player written: {run}/deck_live.html')
-          "
+          PY_DIRECTOR_DECK_CONTINUE_ASSEMBLE
 
       - id: report
         type: bash

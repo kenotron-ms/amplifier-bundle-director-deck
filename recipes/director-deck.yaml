@@ -2,6 +2,10 @@
 # CHANGELOG
 # =============================================================================
 #
+# v0.5.1 (2026-10-02):
+#   - BUGFIX: use quoted heredocs for deterministic Python bash steps so
+#     JavaScript, docstrings, prompts, and OOXML comments cannot break shell transport.
+#
 # v0.5.0 (2026-04-30):
 #   FLEXIBLE INPUT — three input modes; recipe adapts pipeline accordingly.
 #
@@ -96,7 +100,7 @@
 #     * RESULT: run_dir propagates correctly through all four stages.
 
 name: director-deck
-version: "0.5.0"
+version: "0.5.1"
 description: >
   Turn a text prompt OR an existing PPTX into a polished AI-animated deck with
   GPT Image slides and Veo 3.1 video transitions. When a PPTX is supplied the
@@ -179,7 +183,7 @@ stages:
         type: bash
         timeout: 60
         command: |
-          .venv/bin/python -c "
+          python - <<'PY_DIRECTOR_DECK_ANALYZE_INPUT'
           import json, sys
           from pathlib import Path
 
@@ -279,7 +283,7 @@ stages:
           out.write_text(json.dumps(output, indent=2, ensure_ascii=False))
           print(f'Extracted {len(slides_data)} slides from {pptx_input}')
           print(f'Written to {out}')
-          "
+          PY_DIRECTOR_DECK_ANALYZE_INPUT
 
       - id: analyze-html-deck
         # Captures each slide from an HTML presentation as a PNG using Playwright.
@@ -301,8 +305,9 @@ stages:
         type: bash
         timeout: 120
         command: |
-          .venv/bin/python -c "
+          python - <<'PY_DIRECTOR_DECK_ANALYZE_HTML'
           import json, sys, hashlib
+          from io import BytesIO
           from pathlib import Path
 
           run_dir    = Path('{{run_dir}}')
@@ -313,6 +318,7 @@ stages:
               sys.exit(0)
 
           from playwright.sync_api import sync_playwright
+          from PIL import Image
 
           # Resolve to absolute path (handle both file paths and URLs)
           if html_input.startswith('http://') or html_input.startswith('https://'):
@@ -359,40 +365,117 @@ stages:
                   n += 1
 
               # ── Strategy 2: Keyboard-navigable deck (Reveal.js, Impress.js, etc.)
+              #
+              # Strategy 2 renders arbitrary HTML decks (Reveal.js, Impress.js,
+              # generic .slide.active toggles, etc.) where:
+              #
+              #   * Body text is typically fixed-px (e.g. 18px) and titles use
+              #     clamp(...vw, Npx) — so fonts occupy a SMALLER fraction of
+              #     canvas at a LARGER viewport. The default 1536×864 produces
+              #     "too small with too much empty space" output on dense decks.
+              #
+              #   * Different slides need different viewports — a sparse hero
+              #     fits at 1280×720 (biggest text); a dense risk slide may
+              #     need to bump up the ladder before its content fits.
+              #
+              # Algorithm: for each slide, linear-search the viewport ladder
+              # for the smallest viewport where the slide's active element
+              # doesn't overflow. Render at that viewport with DSF=2 for crisp
+              # serif rendering. Pillow-LANCZOS-downscale to W×H for output.
+              #
+              # We close + relaunch the browser with a new context (DSF=2)
+              # before entering Strategy 2 so Strategy 1 keeps its existing
+              # behaviour (element-bounding-box screenshots at DSF=1).
               if captured == 0:
-                  seen_hashes = []
-                  slide_num   = 1
-                  # Reset to start
-                  page.keyboard.press('Home')
-                  page.wait_for_timeout(600)
+                  browser.close()
+                  browser = pw.chromium.launch()
+                  NAV_LADDER = [
+                      (1280, 720),  (1408, 792),  (1536, 864),  (1664, 936),
+                      (1792, 1008), (1920, 1080), (2048, 1152), (2176, 1224),
+                      (2304, 1296), (2432, 1368), (2560, 1440),
+                  ]
+                  ctx = browser.new_context(
+                      viewport={'width': NAV_LADDER[0][0], 'height': NAV_LADDER[0][1]},
+                      device_scale_factor=2,
+                  )
+                  page = ctx.new_page()
+                  page.goto(url, wait_until='networkidle')
+                  page.wait_for_timeout(2000)
+
+                  OVERFLOW_PROBE = (
+                      "(() => {"
+                      "  const sels = ['.slide.active','.present','section.active',"
+                      "                '.reveal section.present','.impress-on-active'];"
+                      "  for (const s of sels) {"
+                      "    const el = document.querySelector(s);"
+                      "    if (el) return el.scrollHeight - el.clientHeight;"
+                      "  }"
+                      "  return document.body.scrollHeight - document.body.clientHeight;"
+                      "})()"
+                  )
+
+                  def navigate_to(n_one_based):
+                      """Home + ArrowRight × (n-1) — fresh navigation from start."""
+                      page.keyboard.press('Home')
+                      page.wait_for_timeout(500)
+                      for _ in range(n_one_based - 1):
+                          page.keyboard.press('ArrowRight')
+                          page.wait_for_timeout(400)
+
+                  seen_hashes    = []
+                  viewports_used = []
+                  slide_num      = 1
 
                   while slide_num <= 100:
-                      img_bytes = page.screenshot()
-                      h = hashlib.md5(img_bytes).hexdigest()
+                      # ── Ladder search: smallest viewport where this slide fits
+                      chosen_w, chosen_h = NAV_LADDER[-1]
+                      for cand_w, cand_h in NAV_LADDER:
+                          page.set_viewport_size({'width': cand_w, 'height': cand_h})
+                          page.wait_for_timeout(250)
+                          navigate_to(slide_num)
+                          try:
+                              overflow_y = page.evaluate(OVERFLOW_PROBE)
+                          except Exception:
+                              overflow_y = 0
+                          if overflow_y is None or overflow_y <= 4:
+                              chosen_w, chosen_h = cand_w, cand_h
+                              break
 
-                      # Stop if we've looped back to a previously-seen frame
-                      if h in seen_hashes and slide_num > 2:
+                      # ── Capture at chosen viewport (native pixels: chosen × 2 via DSF)
+                      img_bytes = page.screenshot()
+                      hsh = hashlib.md5(img_bytes).hexdigest()
+
+                      # Loop detection — bail if we've seen this exact frame before
+                      if hsh in seen_hashes and slide_num > 2:
                           print(f'  Detected loop at slide {slide_num} — stopping')
                           break
 
+                      # ── Downscale to target W × H via Pillow LANCZOS
+                      img = Image.open(BytesIO(img_bytes))
+                      if img.size != (W, H):
+                          img = img.resize((W, H), Image.LANCZOS)
                       out = px_dir / f'slide-{slide_num}.png'
-                      out.write_bytes(img_bytes)
-                      seen_hashes.append(h)
-                      print(f'  slide-{slide_num}.png (keyboard nav)')
+                      img.save(out, 'PNG', optimize=True)
+
+                      seen_hashes.append(hsh)
+                      viewports_used.append((slide_num, chosen_w, chosen_h))
+                      print(f'  slide-{slide_num}.png (viewport {chosen_w}×{chosen_h}, DSF=2)')
                       captured = slide_num
 
-                      # Advance to next slide
+                      # ── Advance and check for end-of-deck (at chosen viewport)
                       page.keyboard.press('ArrowRight')
-                      page.wait_for_timeout(700)
-
-                      # Check if page changed
+                      page.wait_for_timeout(500)
                       next_bytes = page.screenshot()
-                      next_h     = hashlib.md5(next_bytes).hexdigest()
-                      if next_h == h:
+                      if hashlib.md5(next_bytes).hexdigest() == hsh:
                           print(f'  No change after ArrowRight — end of deck')
                           break
 
                       slide_num += 1
+
+                  # Summary of viewports used (helpful for diagnosing overfit decks)
+                  if viewports_used:
+                      uniq_v = sorted(set((vw, vh) for _, vw, vh in viewports_used))
+                      print(f'  Viewports used: {uniq_v}')
 
               browser.close()
 
@@ -448,7 +531,7 @@ stages:
           out_json.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
           print(f'Captured {captured} slides -> {px_dir}')
           print(f'Metadata + DOM text -> {out_json}')
-          "
+          PY_DIRECTOR_DECK_ANALYZE_HTML
 
       - id: write-content
         # Replaces local agent: ghost-deck-writer
@@ -1072,7 +1155,7 @@ stages:
         type: bash
         timeout: 300
         command: |
-          .venv/bin/python -c "
+          python - <<'PY_DIRECTOR_DECK_BUILD_WIREFRAME'
           from pathlib import Path
           from director_deck.schema import SlideDeck, DesignTokens
           from director_deck.html_renderer import write_deck_html
@@ -1084,7 +1167,7 @@ stages:
           write_deck_html(deck, tokens, run / 'deck_wireframe.html', enriched=False)
           build_pptx(deck, tokens, run / 'deck_wireframe.pptx', enriched=False)
           print('done')
-          "
+          PY_DIRECTOR_DECK_BUILD_WIREFRAME
 
     approval:
       required: true
@@ -1315,7 +1398,7 @@ stages:
         type: bash
         timeout: 120
         command: |
-          .venv/bin/python -c "
+          python - <<'PY_DIRECTOR_DECK_PREPARE_KEYFRAMES'
           import json
           from pathlib import Path
           from PIL import Image, ImageFilter
@@ -1353,7 +1436,7 @@ stages:
               img.save(kf_dir / src.name, 'PNG')
               print(f'  {src.name}: {sw}x{sh} → {tw}x{th}')
           print('done')
-          "
+          PY_DIRECTOR_DECK_PREPARE_KEYFRAMES
 
       - id: make-transitions
         # Replaces local agent: transition-director
@@ -1553,7 +1636,7 @@ stages:
         type: bash
         timeout: 600
         command: |
-          .venv/bin/python -c "
+          python - <<'PY_DIRECTOR_DECK_PROCESS_TRANSITIONS'
           from pathlib import Path
           from director_deck.schema import SlideDeck
           from director_deck.video_processor import process_transition, suggest_transition_duration
@@ -1591,7 +1674,7 @@ stages:
           data['slides'][-1]['transition_to_next'] = None
           (run / 'slide_deck.json').write_text(json.dumps(data, indent=2, ensure_ascii=False))
           print('slide_deck.json updated — transition_to_next now points to processed transitions/')
-          "
+          PY_DIRECTOR_DECK_PROCESS_TRANSITIONS
 
     approval:
       required: true
@@ -1632,7 +1715,7 @@ stages:
         type: bash
         timeout: 300
         command: |
-          .venv/bin/python -c "
+          python - <<'PY_DIRECTOR_DECK_ASSEMBLE'
           from pathlib import Path
           from pptx import Presentation
           from pptx.util import Inches
@@ -1730,7 +1813,7 @@ stages:
           _tokens = DesignTokens.from_design_md(run / 'DESIGN.md')
           write_live_html(deck, run, run / 'deck_live.html', tokens=_tokens)
           print(f'HTML player written: {run}/deck_live.html')
-          "
+          PY_DIRECTOR_DECK_ASSEMBLE
 
       - id: report
         type: bash

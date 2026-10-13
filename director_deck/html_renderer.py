@@ -254,6 +254,16 @@ _LAYOUT_CSS = """\
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
+.slide.layout-quote .quote-extra {
+  font-family: var(--font-body-md-family, Inter, sans-serif);
+  font-size: 14px;
+  color: var(--color-on-surface, #F1F5F9);
+  opacity: 0.7;
+  text-align: center;
+  max-width: 680px;
+  line-height: 1.45;
+  margin-top: 8px;
+}
 /* COMPARISON layout */
 .slide.layout-comparison .comparison-body {
   display: flex;
@@ -383,8 +393,17 @@ def _render_slide_div(slide: "Slide", *, enriched: bool = False) -> str:
 
     # ── QUOTE layout ─────────────────────────────────────────────────────────
     if layout == "quote":
+        # With hero_statement, bullets start with the attribution. Otherwise
+        # bullets[0] supplies the quote and bullets[1] is the attribution.
+        # Keep all remaining supporting paragraphs in either representation.
         quote = slide.hero_statement or (slide.bullets[0] if slide.bullets else slide.title)
-        attribution = slide.bullets[1] if len(slide.bullets) > 1 else ""
+        attribution_index = 0 if slide.hero_statement else 1
+        attribution = (
+            slide.bullets[attribution_index]
+            if len(slide.bullets) > attribution_index else ""
+        )
+        extras = slide.bullets[attribution_index + 1:]
+        extras_html = "".join(f'<p class="quote-extra">{p}</p>' for p in extras if p)
         return f"""\
 <div class="slide {layout_class}" id="slide-{slide.id}"{bg_style}>
   {badge}
@@ -392,14 +411,25 @@ def _render_slide_div(slide: "Slide", *, enriched: bool = False) -> str:
     <div class="quote-mark">\u201c</div>
     <blockquote class="quote-text">{quote}</blockquote>
     {f'<div class="quote-attribution">— {attribution}</div>' if attribution else ''}
+    {extras_html}
   </div>
 </div>"""
 
     # ── COMPARISON layout ────────────────────────────────────────────────────
     if layout == "comparison":
-        mid = len(slide.bullets) // 2
-        left_items = slide.bullets[:mid] if slide.bullets else []
-        right_items = slide.bullets[mid:] if slide.bullets else []
+        # Column boundary: an empty string ("") in slide.bullets marks the
+        # column split. Authors with lopsided columns (e.g. 15 left / 6 right)
+        # can insert "" at the exact split point. Falls back to halving when
+        # no sentinel is present, preserving the previous behavior for symmetric
+        # comparisons. Sentinel is consumed (not rendered).
+        if "" in slide.bullets:
+            sep_idx = slide.bullets.index("")
+            left_items = slide.bullets[:sep_idx]
+            right_items = [b for b in slide.bullets[sep_idx + 1:] if b != ""]
+        else:
+            mid = len(slide.bullets) // 2
+            left_items = slide.bullets[:mid] if slide.bullets else []
+            right_items = slide.bullets[mid:] if slide.bullets else []
         left_html = "".join(f'<li class="bullet">{b}</li>' for b in left_items)
         right_html = "".join(f'<li class="bullet">{b}</li>' for b in right_items)
         # Split title at "vs" or "/" for column headers
@@ -502,7 +532,8 @@ def render_deck_html(
     Args:
         deck: Validated SlideDeck to render.
         tokens: Design tokens parsed from DESIGN.md.
-        enriched: False = placeholder image areas; True = real <img> tags where assets set.
+        enriched: False = image-brief placeholders; True = full-width text over
+            available backdrops (full_bleed uses its image as a background).
 
     Returns:
         Complete HTML document string.

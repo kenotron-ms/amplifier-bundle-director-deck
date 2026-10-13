@@ -66,10 +66,13 @@ class TestRenderDeckHtml:
         assert 'class="image-placeholder"' in html
         assert "<img " not in html
 
-    def test_enriched_with_assets_shows_img_tag(self, enriched_deck, tokens):
+    def test_enriched_uses_backdrop_without_competing_image_panel(self, enriched_deck, tokens):
         html = render_deck_html(enriched_deck, tokens, enriched=True)
-        assert "<img " in html
-        assert "assets/slide-1-image.png" in html
+        assert "assets/slide-1-backdrop.png" in html
+        assert "assets/slide-1-image.png" not in html
+        assert "<img " not in html
+        assert 'class="image-placeholder"' not in html
+        assert "Point A" in html
 
     def test_enriched_with_backdrop_has_background_image_style(
         self, enriched_deck, tokens
@@ -91,10 +94,55 @@ class TestRenderDeckHtml:
         html = render_deck_html(deck, tokens)
         assert html.startswith("<!DOCTYPE html>")
 
-    def test_enriched_no_assets_falls_back_to_placeholder(self, deck, tokens):
-        """Enriched mode with no assets set should still render placeholder."""
+    def test_enriched_no_assets_preserves_text_without_placeholder(self, deck, tokens):
+        """Placeholders belong to wireframe review, not the enriched deck."""
         html = render_deck_html(deck, tokens, enriched=True)
-        assert 'class="image-placeholder"' in html
+        assert 'class="image-placeholder"' not in html
+        assert "Slide One" in html
+        assert "Point A" in html
+        assert "Point B" in html
+        assert "Point C" in html
+
+    def test_quote_preserves_supporting_paragraphs(self, deck, tokens):
+        slide = deck.slides[0].model_copy(update={
+            "layout_type": "quote",
+            "hero_statement": "A memorable quote",
+            "bullets": ["Example Author", "Context", "Citation"],
+        })
+        quote_deck = deck.model_copy(update={"slides": [slide]})
+        html = render_deck_html(quote_deck, tokens)
+        assert '<blockquote class="quote-text">A memorable quote</blockquote>' in html
+        assert "Example Author" in html
+        assert '<p class="quote-extra">Context</p>' in html
+        assert '<p class="quote-extra">Citation</p>' in html
+
+    def test_quote_without_hero_preserves_legacy_bullet_mapping(self, deck, tokens):
+        slide = deck.slides[0].model_copy(update={
+            "layout_type": "quote",
+            "hero_statement": "",
+            "bullets": ["A memorable quote", "Example Author", "Context"],
+        })
+        quote_deck = deck.model_copy(update={"slides": [slide]})
+        html = render_deck_html(quote_deck, tokens)
+        assert '<blockquote class="quote-text">A memorable quote</blockquote>' in html
+        assert '<div class="quote-attribution">— Example Author</div>' in html
+        assert '<p class="quote-extra">Context</p>' in html
+
+    def test_comparison_respects_explicit_uneven_column_split(self, deck, tokens):
+        slide = deck.slides[0].model_copy(update={
+            "layout_type": "comparison",
+            "title": "Before / After",
+            "bullets": ["Left A", "Left B", "Left C", "", "Right A"],
+        })
+        comparison_deck = deck.model_copy(update={"slides": [slide]})
+        html = render_deck_html(comparison_deck, tokens)
+        boundary = html.index('class="comparison-col-title">After')
+        assert "Left A" in html[:boundary]
+        assert "Left B" in html[:boundary]
+        assert "Left C" in html[:boundary]
+        assert "Right A" not in html[:boundary]
+        assert "Right A" in html[boundary:]
+        assert '<li class="bullet"></li>' not in html
 
 
 class TestWriteDeckHtml:
