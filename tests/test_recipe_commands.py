@@ -18,6 +18,7 @@ SAFE_CONTEXT = {
     "html_input": "fixtures/input.html",
     "run_slug": "safe-run",
     "run_dir": "runs/safe-run",
+    "vlm_refine": "",
     "_approval_message": "approved",
 }
 _CONTEXT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_]\w*)\s*}}")
@@ -82,10 +83,7 @@ def test_all_deterministic_python_commands_use_parseable_quoted_heredocs():
         compile(tree, str(recipe_path), "exec")
 
 
-def test_html_capture_has_no_direct_vlm_refinement_client():
+def test_vlm_refinement_remains_default_off():
     main_recipe = yaml.safe_load(RECIPE_FILES[0].read_text(encoding="utf-8"))
 
-    assert "vlm_refine" not in main_recipe["context"]
-    commands = "\n".join(_load_bash_commands(RECIPE_FILES[0]))
-    assert "import openai" not in commands
-    assert "chat.completions" not in commands
+    assert main_recipe["context"]["vlm_refine"] == ""

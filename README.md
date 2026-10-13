@@ -130,6 +130,28 @@ context:
 HTML capture preserves existing slide images and skips GPT Image generation.
 The recovered adaptive capture is automatic for keyboard-navigable decks.
 
+### Optional VLM refinement
+
+The adaptive overflow search can still yield visually cramped slides. Pass
+`vlm_refine: "true"` to ask OpenAI Vision for at most one check per eligible
+keyboard-navigable slide (Strategy 2 only; not `#slide-N` element capture).
+Only a `cramped` verdict permits one additional viewport step. A `small` verdict
+keeps the viewport: enlarging it would shrink fixed-pixel text after downscaling.
+This is off by default.
+
+```bash
+python -m pip install openai
+```
+
+Use the same activated environment and set `OPENAI_API_KEY`. Enabling refinement
+sends slide screenshots to OpenAI and adds paid API usage and latency. Requests
+use a five-second SDK timeout and no automatic retries. Missing dependencies or
+API errors returned to the running process warn and keep the overflow-derived
+viewport. The capture step's existing 120-second deadline still applies to the
+whole deck; refinement can cause large decks to exceed it.
+The optional logic has mocked regression coverage; live VLM results, quality
+improvement, pricing, and latency have not been re-verified.
+
 ### Continuing a Run
 
 If you've already generated content and want to re-run visuals and transitions from an existing run directory:
